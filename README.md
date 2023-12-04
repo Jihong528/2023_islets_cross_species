@@ -1,1 +1,2 @@
-# 2023_islets_cross_species
+# Cross-species scRNA-seq analysis of islets cell type, GPCRs expression and GLP1R-GPCR co-expression network
+Hormones from pancreatic islets maintain glucose levels, with G protein-coupled receptors (GPCRs) crucial for this balance. GPCR dimerization modulates receptor function, affecting physiological responses. The glucagon-like peptide-1 receptor (GLP1R) is vital for glucose regulation and a target for diabetes treatment. 
