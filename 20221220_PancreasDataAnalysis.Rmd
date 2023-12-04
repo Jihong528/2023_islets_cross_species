@@ -1,0 +1,4678 @@
+---
+title: "Pancrea Data Analysis"
+author: "zhengyiyi"
+date: "2022-12-20"
+output: html_document
+---
+
+```{bash 20221219 Download sc xenopus tropicals and run cellranger}
+# 1. 使用lnd进行下载
+cd /home/zhengjh/Software/linuxnd
+./lnd login -u X101SC23011182-Z01-J011 -p gjn7yb9j
+
+# 2. 获取数据列表
+./lnd list
+./lnd list oss://
+./lnd list oss://CP2019092000014/H101SC23011182/RSSQ00504/X101SC23011182-Z01/X101SC23011182-Z01-J011/
+## run cellranger
+ID=Xenopus_tropicalis_sc_10x
+transcriptome=/home/yihang/refgenomes/xenopus_tropicalis_10x
+fastqs=/home/zhengjh/projects/Pancreas/Data
+sample=Xenopus_tropicalis_sc
+
+# 3.下载数据
+lnd_command="nohup ./lnd cp "
+oss_path=" oss://CP2019092000014/H101SC23011182/RSSQ00504/X101SC23011182-Z01/X101SC23011182-Z01-J011/"
+datapath="/home/zhengjh/projects/Pancreas/Data/snRNAseqData &"
+cat sn_feizhou_xenopus_pan_datalist.txt  | while read line; do echo "${lnd_command}${oss_path}${line}" "${datapath}" ; done >> Download_sn_feizhou_xenopous_command.sh
+chmod +x Download_sn_feizhou_xenopous_command.sh
+cat Download_sn_feizhou_xenopous_command.sh
+sh Download_sn_feizhou_xenopous_command.sh > sn_feizhou_xenopous.out 
+
+# 4. run cellranger
+/home/zhengjh/Software/cellranger-7.1.0/bin/cellranger count --id=$ID \
+                   --transcriptome=$transcriptome \
+                   --fastqs=$fastqs \
+                   --sample=${sample} \
+                   --localcores=80 \
+                   --localmem=128 \
+                   --include-introns=true
+
+```
+
+```{r setup, include=FALSE}
+path <- "/home/zhengjh/projects/Pancreas/Analysis/20221220_Xenoupus_Seurat_Analysis/"
+knitr::opts_chunk$set(eval=TRUE, #在块中运行代码(default = TRUE)
+                      highlight = T, #高亮显示
+                      echo = F, #是否在输出中包含源代码
+                      tidy=TRUE,#是否整理代码
+                      error = T, #是否在输出中包含错误信息
+                      warning = F, #是否在输出中包含警告(default = TRUE)
+                      message  = F, #是否在输出中包含参考的信息
+                      cache=F)
+knitr::opts_knit$set(root.dir = path)
+```
+
+# Xenopus_tropicalis scRNA-seq Analysis
+## Quality Control
+
+```{r quality control, echo=FALSE}
+source("/home/zhengjh/scripts/seurat/function/SeuratWrapperFunction.R")
+# nohup sh QC.sh  > QC.out.txt 2>&1 &
+# SingleDataQualityOverview.R -o /home/zhengjh/projects/Pancreas/Analysis/20221220_Xenoupus_Seurat_Analysis -t 10X
+# --datapath /home/zhengjh/projects/Pancreas/Data/Xenopus_tropicalis_sc_10x/outs/filtered_feature_bc_matrix --project_name Xenopus_2beiti --mt_pattern "^MT-" --rb_pattern "^Rpl|^Rps" --min_cell 2 --min_gene 20
+
+seurat_rds <- readRDS("Xenopus_2beiti_dataquality_overview_seurat.rds")
+mt_gene <- c("ATP6", "ATP8", "COX1", "cox2", "cytb", "nd1", "nd2", "nd3", "nd4", "nd4l", "nd5", "nd6")
+seurat_rds[["percent.mt"]] <- PercentageFeatureSet(object = seurat_rds, features = mt_gene)
+seurat_rds[["percent.rb"]] <- PercentageFeatureSet(object = seurat_rds, pattern = "^rps|^rps")
+saveRDS(seurat_rds, "Xenopus_2beiti_dataquality_overview_seurat.rds")
+
+```
+
+
+```{r Seurat Analysis, echo=FALSE}
+# nohup sh xenopus_tropicals_runSeuratPipeline.sh > Seurat_pipeline.out_new.txt 2>&1 &
+rm(list = ls())
+source("/home/zhengjh/scripts/seurat/function/SeuratWrapperFunction.R")
+seurat_rds <- readRDS("xenoupus_2beiti_pancreas_subtype_log_norm_new_lognormalize_clustering_seurat.rds")
+
+ensxetg_gene <- rownames(seurat_rds)[grep("^ENSXETG", rownames(seurat_rds))]
+write.csv(ensxetg_gene, "20221220_xenopus_tropicalis_ensxetg_gene.csv")
+markers <- read.csv("4.MarkersInCluster/xenoupus_2beiti_pancreas_subtype_log_norm_new_MarkersInClusters.csv", row.names = 1)
+top <- TopMarkersInCluster(cluster.markers = markers, file_prefix = "xenoupus_2beiti_pancreas_subtype_", top_num = 2)
+
+cellmarker <- read.csv("/home/zhengjh/projects/scRNA_seq_Data/Cell_type_identification_data/Cellmarker/cell_type_marker_gene_20221214_from_yihang.csv")
+cellmarker_pancreas <- cellmarker[grep("Pancre", cellmarker$tissue, ignore.case = T),  ]
+
+predict_celltype_all <- IdentifyCelltypeByTop2Markers(topn_markers = top, cellmarker = cellmarker)
+predict_celltype_pancreas <- IdentifyCelltypeByTop2Markers(topn_markers = top, cellmarker = cellmarker_pancreas)
+
+celltype_info <- list(predict_celltype_all = predict_celltype_all, predict_celltype_pancreas = predict_celltype_pancreas )
+write.xlsx(celltype_info, "20221220_xenopus_tropicalis_predict_celltype_by_top2_markers.xlsx", colNames = T, rowNames = F)
+
+DimPlot(seurat_rds, label = T, reduction = "tsne", group.by = "seurat_clusters")
+
+```
+
+
+# 20230519 reanalysis pancreas data-do clustering, celltype identification
+## 1. download data
+```{bash}
+cd /home/zhengjh/projects/Pancreas
+# GSE201900 rat pancrea sc
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6077nnn/GSM6077755/suppl/GSM6077755_Young_replicate1_98_barcodes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6077nnn/GSM6077755/suppl/GSM6077755_Young_replicate1_98_features.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6077nnn/GSM6077755/suppl/GSM6077755_Young_replicate1_98_matrix.mtx.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6077nnn/GSM6077756/suppl/GSM6077756_Young_replicate2_62_barcodes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6077nnn/GSM6077756/suppl/GSM6077756_Young_replicate2_62_features.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6077nnn/GSM6077756/suppl/GSM6077756_Young_replicate2_62_matrix.mtx.gz
+
+# GSE203412 rat islet sc 
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6171nnn/GSM6171566/suppl/GSM6171566_AA7_umiCount.rds.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6171nnn/GSM6171567/suppl/GSM6171567_AA8_umiCount.rds.gz
+
+# GSE226141 pig pancrea sn
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM7065nnn/GSM7065665/suppl/GSM7065665_WT_P_barcodes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM7065nnn/GSM7065665/suppl/GSM7065665_WT_P_genes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM7065nnn/GSM7065665/suppl/GSM7065665_WT_P_matrix.mtx.gz
+
+# GSE198623 pig islet sc 
+curl -o local.rds "https://corpora-data-prod.s3.amazonaws.com/e0d6e2aa-3b17-49e3-b1a2-ed948999c69c/local.rds?AWSAccessKeyId=ASIATLYQ5N5XWTYM22W3&Signature=jp4y3Mrj9eSPZjlt8zbv5tW1huU%3D&x-amz-security-token=IQoJb3JpZ2luX2VjEHEaCXVzLXdlc3QtMiJIMEYCIQDnI6MHnB30z%2FcX3EqvHU6odN%2FnRZiuALPE1XP260dArAIhAOKNF2kSgu6Yt6JhAV4NWOJMVVeIvTqRRwMud7O9SO3FKvQDCJr%2F%2F%2F%2F%2F%2F%2F%2F%2F%2FwEQARoMMjMxNDI2ODQ2NTc1Igz861XvsdY1hv84WZUqyANg54bbr3iUuJLJ7tmS8sgvfjlrVc3RsE7TBWyXMtzqz3348ns55ikjxItOeruiWx1Pk6xF7DZk4rt%2BUSD1ZO7FYXujmtBOIN4MH1NrMj7wWv%2FvtOcmHRKmbYdqPcDh6PgtSM2ssvvrREWRYF7o%2Bq0VIVjTpRzzTB1CYbJmpSYNI5i0Q3IA1uCQTH0DWaY7F4BMNhSuTzFhVhVdR%2F91MIEvWiIRa4b8a4TAqJSyi7sGOm4eTxSLKbbr%2FnkDpUIyeny4pJSs4u%2FLdKGzHLQxyu1A6BhvtsGp%2FaQk25KQtDODCIrvjQ6%2BHWfKMSk8ZPdP5tV5yicUdXjMTIWYli5iadNGZWxChwvLStRq8Wl%2FJ7g2WRSrQ84A2iMOGkmQmgoaVy8vLtRj8IGniabBfC7V6xgtegl1ZKgn9rYDSX8NyEHHX99V0EstsKMokurvmKtHjrLA7gLiSL5KVlq1onvAZ42hlpiBhl60FfME59rzeNt6gSN1J7zqcHKNBrK%2Bb2ep6QhcllsQGm9D69O9N%2BneZ1sZBePh%2FQprz2bAyxRJ%2BYTcw8sI2szODt%2Bps446DMR24KLGIFa2%2FKtNt61OOBZHQUKV2QcA%2FxuKqtMwgsylowY6pAG67v2nsO0WQpjdAVBGX%2BSOyaSTIJUVkucHOY9BPYv4SSXG5Mr2S7rpQoOMI3nXAgPYIvSXVwwq64kbw2rWPU7bmkOkNwJichQkwfdyBs%2FkZsZE0Z9gM%2FPs2TEEkNTp5Gto58A25lZBs8OiDbknSIqI%2B2jD0xUCApmr5UigcCiESKdgSR1ggd8YYx0oz8nNkkU7OJKMv9ip4vgQ6zqsYw%2FstkrqGA%3D%3D&Expires=1685244460"
+
+# GSE120180 晓竹师姐处理的那个rds
+# CNP0001469 monkey sn
+wget https://ftp.cngb.org/pub/SciRAID/nhpca/download/4.Processed_datasets/Seurat4.0_Pancreas.rds
+
+
+```
+## 2. process rat data
+```{r process rat data}
+## 1. process GSE201900 rat pancrea sc
+# 1) read data
+rm(list = ls())
+library(Seurat)
+library(scScape)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis")
+file_path <- "/home/zhengjh/projects/Pancreas/Data/"
+file_name <- list.files(path = file_path, pattern = "rat_pan_sc$")
+object.list <- list()
+for (i in 1:length(file_name)){
+	temp <- Read10X(data.dir = paste0(file_path, file_name[i]))
+	colnames(temp) <- paste(file_name[i], colnames(temp), sep = "_")
+	  temp <- CreateFirstFilterSeuratObject(counts = temp, pr.name = file_name[i], min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^Mt-", rb.pattern = "^Rpl|^Rps")
+  object.list[[file_name[i]]] <- temp
+  rm(temp)
+}
+
+# merge object
+seurat_object <- merge(x = object.list[[1]], y = object.list[2:length(object.list)])
+prename <- "GSE201900_rat_pancrea_sc"
+# 2) QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 6000 & nCount_RNA < 30000 & percent.mt < 20 & percent.rb < 30)
+# GSM6077755_rat_pan_sc GSM6077756_rat_pan_sc 
+#                17037                  9730
+# 3) pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, correct.method = "Harmony", assay.use = "RNA")
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.4
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = prename, mt.rb.pattern = "^Mt-|Rp[sl]")
+write.csv(markers, "GSE201900_rat_pancrea_sc_markers.csv")
+
+markercelltype_df <- read.csv("mammals_islets_markers.csv")
+markercelltype_df$species <- NULL
+seurat_object <- MapMarkersAndCelltypes(object = seurat_object, cluster.markers = markers,
+																		 markercelltype_df = markercelltype_df)
+label_position <- function(labels) {
+    if (length(unique(labels)) == 1) {
+        position <- as.character(unique(labels))
+    } else {
+        position <- "mixed"
+    }
+    return(position)
+}
+
+pdf("celltype_assigan_clustree.pdf", width = 40, height = 30)
+clustree(seurat_object@meta.data, prefix = "RNA_snn_res.", node_label = "celltype_assign",
+         node_label_aggr = "label_position")
+dev.off()
+
+pdf("cpe_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.",
+         node_colour = "Cpe", node_colour_aggr = "median")
+dev.off()
+
+pdf("Pnliprp1_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.",
+         node_colour = "Pnliprp1", node_colour_aggr = "median")
+dev.off()
+
+pdf("Featureplot_markers.pdf", width = 40, height = 40)
+FeaturePlot(seurat_object, features = unique(markercelltype_df$markers), ncol = 4)
+dev.off()
+
+pdf("Featureplot_markers_secretory.pdf", width = 40, height = 20)
+FeaturePlot(seurat_object, features = c("Cpe", "Pnliprp1", "Gcg", "Ins1", "Ppy", "Pyy", "Ins2", "Prss1"), ncol = 4)
+dev.off()
+
+seurat_object$celltype_assign <- as.character(seurat_object$celltype_assign)
+seurat_object$celltype_assign[seurat_object@active.ident %in% c(8 ,13)] <- "T cells"
+
+pdf("20230521_GSE201900_rat_pancrea_sc_clustering.pdf", width = 10, height = 10)
+DimPlot(seurat_object, group.by = "celltype_assign", label = T)
+dev.off()
+
+saveRDS(seurat_object, "GSE201900_rat_pancrea_sc.rds")
+
+
+## 2. process GSE203412 rat pancrea sc 
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis")
+
+# 1) read data
+islet_rep1 <- readRDS("/home/zhengjh/projects/Pancreas/Data/GSM6171566_rat_islet_sc.rds")
+colnames(islet_rep1) <- paste0("islet_rep1", colnames(islet_rep1))
+dim(islet_rep1) # 13411  6557
+
+islet_rep2 <- readRDS("/home/zhengjh/projects/Pancreas/Data/GSM6171567_rat_islet_sc.rds")
+colnames(islet_rep2) <- paste0("islet_rep2", colnames(islet_rep2))
+dim(islet_rep2) # 13733  9959
+
+# combine data
+object.list <- list()
+file_name <- c("islet_rep1", "islet_rep2")
+for (i in 1:length(file_name)){
+	  object.list[[file_name[i]]] <- CreateFirstFilterSeuratObject(counts = get(file_name[i]), pr.name = file_name[i], 
+	  																														 min.cell = 3, min.gene = 3, mt.pattern = "^Mt-", rb.pattern = "^Rpl|^Rps")
+}
+
+# merge object
+seurat_object <- merge(x = object.list[[1]], y = object.list[2:length(object.list)])
+
+prename <- "rat_islets_sc"
+# 2) QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 3000 & nCount_RNA < 30000 & percent.mt < 10 & percent.rb < 20)
+table(seurat_object$orig.ident)
+# islet_rep1      islet_rep2 
+# 5321            7597     
+
+# 3) pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20,
+																							correct.method = "Harmony", assay.use = "RNA")
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.8
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = prename, mt.rb.pattern = "^Mt-|Rp[sl]")
+
+markercelltype_df <- read.csv("rat_pancreas_markers.csv")
+seurat_object <- MapMarkersAndCelltypes(object = seurat_object, cluster.markers = markers,
+																		 markercelltype_df = markercelltype_df)
+saveRDS(seurat_object, "rat_all_islet.rds")
+
+# we just consider the endocrine cells, Nonendocrine cells and Endo- crine doublets(high expression of multiple endocrine cell markers) were removed
+FeaturePlot(seurat_object, features = c("Ins1", "Ins2"))
+pdf("ins1_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.",
+         node_colour = "Ins1", node_colour_aggr = "median")
+dev.off()
+
+pdf("ins2_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.",
+         node_colour = "Ins1", node_colour_aggr = "median")
+dev.off()
+
+pdf("gcg_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.", node_colour = "Gcg", node_colour_aggr = "mean")
+dev.off()
+
+pdf("Sst_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.", node_colour = "Sst", node_colour_aggr = "mean")
+dev.off()
+
+
+FeaturePlot(seurat_object, features = c("Ins1", "Ins2"))
+pdf("endo_expression_featureplot.pdf", width = 20, height = 30)
+FeaturePlot(seurat_object, features = c("Sst","Gcg","Ins1", "Ins2"), ncol = 2)
+dev.off()
+DimPlot(seurat_object, group.by = "celltype_markers", label = T) + DimPlot(seurat_object, group.by = "ident", label = T)
+DimPlot(seurat_object, group.by = "ident", label = T)+ DimPlot(seurat_object, group.by = "celltype_assign", label = T)
+# endocrine cells
+# 1,2--> beta
+# 4,5--> alpha
+# 11 --> delta
+# 7 --> PP
+
+# 3. just use GSE203412 rat islet sc endocrine cells-final
+
+library(scScape)
+library(Seurat)
+library(ggplot2)
+library(harmony)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis")
+seurat_object <- readRDS("GSE203412_rat_all_islet.rds")
+seurat_object <- subset(seurat_object, idents = c(1, 2, 4, 5, 11, 7))
+prename <- "rat_islets_endocrine"
+# pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 10,
+																							correct.method = "Harmony", assay.use = "RNA")
+# Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.1
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = prename, mt.rb.pattern = "^Mt-|Rp[sl]")
+markercelltype_df <- read.csv("rat_pancreas_markers.csv")
+seurat_object <- MapMarkersAndCelltypes(object = seurat_object, cluster.markers = markers, markercelltype_df = markercelltype_df)
+
+saveRDS(seurat_object, "20230523_finalused_GSE203412_rat_endo.rds")
+# remove PP cells which express Gcg(Gcg > 6) and delta cells which express(Gcg > 6)
+gcg <- seurat_object@assays$RNA@data["Gcg", ]
+cells <- colnames(seurat_object)[seurat_object$celltype_assign == "PP" & gcg > 6]
+seurat_object$celltype_assign <- as.character(seurat_object$celltype_assign)
+seurat_object$celltype_assign[colnames(seurat_object) %in% cells] <- "doublets"
+FeaturePlot(seurat_object, features = c("Ins1", "Ins2"))
+cells <- colnames(seurat_object)[seurat_object$celltype_assign == "delta" & gcg > 6]
+seurat_object$celltype_assign[colnames(seurat_object) %in% cells] <- "doublets"
+seurat_object <- subset(seurat_object, celltype_assign %in% "doublets", invert = T)
+saveRDS(seurat_object, "try1.rds")
+
+pdf("ins1_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.",
+         node_colour = "Ins1", node_colour_aggr = "median")
+dev.off()
+
+pdf("ins2_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.",
+         node_colour = "Ins1", node_colour_aggr = "median")
+dev.off()
+
+pdf("gcg_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.", node_colour = "Gcg", node_colour_aggr = "mean")
+dev.off()
+
+pdf("Sst_expression_clustree.pdf", width = 20, height = 30)
+clustree(seurat_object, prefix = "RNA_snn_res.", node_colour = "Sst", node_colour_aggr = "mean")
+dev.off()
+
+
+FeaturePlot(seurat_object, features = c("Ins1", "Ins2"))
+pdf("endo_expression_featureplot.pdf", width = 20, height = 30)
+FeaturePlot(seurat_object, features = c("Sst","Gcg","Ins1", "Ins2"), ncol = 2)
+dev.off()
+DimPlot(seurat_object, group.by = "celltype_markers", label = T) + DimPlot(seurat_object, group.by = "ident", label = T)
+DimPlot(seurat_object, group.by = "ident", label = T)+ DimPlot(seurat_object, group.by = "celltype_assign", label = T)
+
+seurat_object@active.ident <- factor(seurat_object$celltype_assign)
+plots <- scScape::GenerateClusterPlot(exp_count.seurat = seurat_object, file.prefix = prename, pt.size = 0.5)
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = "rat_islets_celltype_", mt.rb.pattern = "^Mt-|Rp[sl]")
+# Load libraries
+library(dplyr)
+library(factoextra)
+
+plots_hclust <- scScape::PerformHclustWithMarkers(object = seurat_object, marker.df = markers, file.prefix = prename, out.dir = "ClusterFigs/")
+
+```
+## 3. process pig data
+### 1) process GSE198623 sc pig data
+```{r  process GSE198623 sc pig data}
+
+## 1. the object from the authors, genename is ensemble id
+rm(list = ls())
+library(dplyr)
+library(factoextra)
+library(scScape)
+library(Seurat)
+library(ggplot2)
+library(harmony)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis")
+# 1. process GSE198623 data
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Data/GSE198623_pig_islet_sc.rds")
+seurat_object$cell_type <- as.character(seurat_object$cell_type)
+seurat_object$cell_type <- gsub("pancreatic A cell", "alpha", seurat_object$cell_type)
+seurat_object$cell_type <- gsub("type B pancreatic cell", "beta", seurat_object$cell_type)
+seurat_object$cell_type <- gsub("pancreatic D cell", "delta", seurat_object$cell_type)
+seurat_object$cell_type <- gsub("pancreatic PP cell", "PP", seurat_object$cell_type)
+seurat_object@active.ident <- factor(seurat_object$cell_type)
+prename <- "pig_islet_sc"
+seurat_object$orig.ident <- seurat_object$sample
+# pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 10,
+																							correct.method = "Harmony", assay.use = "RNA")
+seurat_object@active.ident <- factor(seurat_object$cell_type)
+plots <- scScape::GenerateClusterPlot(object = seurat_object, file.prefix = prename, pt.size = 0.5) # 22056 cells
+saveRDS(seurat_object, "pig_seurat_object.rds")
+
+## 2. change the ensemble id to genename and then create seurat object, some genename is ensemble id, meaning they are new transcripts
+rm(list = ls())
+library(dplyr)
+library(factoextra)
+library(scScape)
+library(Seurat)
+library(ggplot2)
+library(harmony)
+library(clustree)
+library(openxlsx)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis")
+
+seurat_object <- readRDS("pig_seurat_object.rds")
+
+geneinfo <- scScape::CovertEnsembl2Genename(ensembl_gene_id = rownames(seurat_object), ensembl_database = "hsapiens_gene_ensembl",
+																								attributes = c("ensembl_gene_id", "external_gene_name", "sscrofa_homolog_associated_gene_name"))
+
+write.xlsx(geneinfo, "humangene2piggene.xlsx", colNames = T, rowNames = T)
+
+# use duplicated() to detect the duplicated rows
+dup_rows <- duplicated(geneinfo$ensembl_gene_id)
+# use subset() to delete the duplicated rows
+unique_geneinfo <- subset(geneinfo, !dup_rows)
+new_row1 <- c("ENSG00000215271", "HOMEZ", "HOMEZ")
+new_row2 <- c("ENSG00000112096", "SOD2", "SOD2")
+unique_geneinfo <- rbind(unique_geneinfo, new_row1, new_row2)
+
+# these are new transcripts
+unique_geneinfo$external_gene_name[unique_geneinfo$external_gene_name==""] <-  unique_geneinfo$ensembl_gene_id[unique_geneinfo$external_gene_name==""]
+
+expr_matrix <- seurat_object@assays$RNA@counts
+length(intersect(unique_geneinfo$ensembl_gene_id, rownames(expr_matrix))) # 15824
+dim(expr_matrix) #15824 gene * 22056 cells
+
+# map the genename
+rownames(expr_matrix) <- unique_geneinfo[match(rownames(expr_matrix), unique_geneinfo$ensembl_gene_id), "external_gene_name"]
+cellinfo <- seurat_object@meta.data
+rm(seurat_object)
+
+# 1) create seurat object
+seurat_object <- CreateFirstFilterSeuratObject(counts = expr_matrix, pr.name = "pig_islets_sc", 
+	  																					min.cell = 3, min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+
+prename <- "pig_islets_sc"
+
+# add the celltype info to metadata
+seurat_object <- AddMetaData(object = seurat_object, metadata = cellinfo)
+
+# 2)QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 3000 & nCount_RNA < 30000 & percent.mt < 20 & percent.rb < 30)
+table(seurat_object$orig.ident)
+# pig_1 pig_2 
+# 10460  9954     
+
+# 3) pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20,
+																							correct.method = "Harmony", assay.use = "RNA")
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.1
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+# map the celltype
+levels_define <- c("beta", "beta", "alpha", "delta", "beta", "PP")
+new.cluster.ids <- levels_define
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+seurat_object$celltype_assign <- seurat_object@active.ident
+
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = prename, mt.rb.pattern = "^MT-|RP[SL]")
+plots <- scScape::GenerateClusterPlot(object = seurat_object, file.prefix = prename, pt.size = 0.5) # 22056 cells
+table(seurat_object$orig.ident)
+# pig_1 pig_2 
+# 10460  9954
+saveRDS(seurat_object, "20230524_final_GSE198623_pig_seurat_object_sc.rds")
+
+
+
+```
+
+### 2) process GSE226141-GSM7065665 WT sn-data process 0526--give up: the number of endocrine cell is few
+```{r process GSE226141-GSM7065665 WT sn-data process 0526}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis")
+file_path <- "/home/zhengjh/projects/Pancreas/Data/"
+file_name <- list.files(path = file_path, pattern = "pig_pan_sn$")
+mtgene <- c("ND1", "ND2", "COX1", "COX2", "ATP6", "ATP8", "COX3", "ND3", "ND4L", "ND4", "ND5", "ND6", "CYTB")
+
+object.list <- list()
+for (i in 1:length(file_name)){
+	temp <- Read10X(data.dir = paste0(file_path, file_name[i]))
+	rownames(temp)[rownames(temp) %in% mtgene] <- paste0("MT-", mtgene)
+	colnames(temp) <- paste(file_name[i], colnames(temp), sep = "_")
+	  temp <- CreateFirstFilterSeuratObject(counts = temp, pr.name = file_name[i], min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+  object.list[[file_name[i]]] <- temp
+  rm(temp)
+}
+
+
+# one object
+seurat_object <- object.list[[1]]
+rm(object.list)
+
+prename <- "GSM7065665_pig_pancrea_sn"
+# 2) QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 200 & nFeature_RNA < 5000 & nCount_RNA < 20000 & percent.mt < 2 & percent.rb < 2)
+# GSM7065665_pig_pan_sn 
+#                13120 
+# 3) pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# 4) no batch correction -> find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, do.correction = FALSE,
+																							assay.use = "RNA", normalization.method = "LogNormalize", file.prefix = prename)
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.8
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = prename, mt.rb.pattern = "^MT-|^RP[SL]")
+
+write.csv(markers, "GSM7065665_pig_pancrea_sn_markers.csv")
+
+markercelltype_df <- read.csv("mammals_islets_markers.csv")
+markercelltype_df$species <- NULL
+seurat_object <- MapMarkersAndCelltypes(object = seurat_object, cluster.markers = markers,
+																		 markercelltype_df = markercelltype_df)
+
+saveRDS(seurat_object, "20230524_final_GSE226141_GSM7065665_pig_pancrea_sn_object.rds")
+
+
+```
+
+## 4. process sc and sn monkey data
+### 1) process GSE120180 sc monkey data
+```{r process GSE120180 sc monkey data}
+
+rm(list = ls())
+
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/")
+
+## GSE120180 sample
+# sample information
+# YFL young Female; YM: younf male; OF: old female; OM: old male
+# CE01: YF1, CE07: YF2, CE08: YF3, CE14: YF4
+# CE04: YM1, CE05: YM2, CE06: YM3, CE15: YM4
+# CE09: OF1, CE10: OF2, CE13: OF3, CE16: OF4
+# CE03: OM1, CE11: OM2, CE12: OM3, CE17: OM4
+used_sampleid <- c("CE01|CE07|CE08|CE14|CE04|CE05|CE06|CE15")
+file_path <- list.files(path = "/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/GSE120180_RAW", full.names = T)
+index <- grep(used_sampleid, file_path)
+file_path <- file_path[index]
+
+exp_count <- NULL
+for (i in 1:length(file_path)) {
+  print(i)
+  temp <- read.table(file_path[i], sep = "\t", header = TRUE, row.names = 1)
+  if (is.null(exp_count)) {
+    exp_count <- temp
+  } else {
+    exp_count <- merge(exp_count, temp, by = "row.names", all = TRUE)
+    rownames(exp_count) <- exp_count[, 1]
+    exp_count <- exp_count[, -1]
+  }
+}
+
+mtgene <- c("ND1", "ND2", "COX1", "COX2", "ATP6", "ATP8", "COX3", "ND3", "ND4L", "ND4", "ND5", "ND6", "CYTB")
+rownames(exp_count)[rownames(exp_count) %in% mtgene] <- paste0("MT-", mtgene)
+	
+# 1) read data
+prename <- "GSE120180_monkey_pan_sc"
+col_names <- colnames(exp_count)
+sampleid <- sapply(strsplit(col_names, "_"), `[`, 1)
+seurat_object <- CreateFirstFilterSeuratObject(counts = exp_count, pr.name = prename, min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+col_names <- colnames(exp_count)
+group <- sapply(strsplit(col_names, "_"), `[`, 1)
+
+seurat_object$orig.ident <- group
+
+rm(exp_count)
+
+# 2) QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 200 & nFeature_RNA < 7500 & nCount_RNA < 200000 & percent.mt < 10 & percent.rb < 10)
+seurat_object$group <- seurat_object$orig.ident
+seurat_object$orig.ident <- seurat_object@active.ident
+# GSM7065665_pig_pan_sn 
+#                2924 
+# 3) pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# 4) no batch correction -> find clusters
+seurat_object$orig.ident <- seurat_object$group
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, do.correction = TRUE,
+																							assay.use = "RNA", normalization.method = "LogNormalize", file.prefix = prename, correct.method = "Harmony")
+
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.6
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+seurat_object$seurat_clusters <- seurat_object@active.ident
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_cluster"), mt.rb.pattern = "^MT-|^RP[SL]")
+
+
+new.cluster.ids <- c("alpha", "alpha", "beta", "alpha", "alpha", "alpha", "delta", "alpha", "PP")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+saveRDS(seurat_object, "20230527_final_GSE120180_monkey_iselts_sc.rds")
+
+```
+### 2) process CNP0001469 monkey snRNA-seq
+```{r process CNP0001469 monkey snRNA-seq}
+### process monkey snRNA-seq
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/")
+
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Data/Seurat4.0_monkey_sn_Pancreas.rds")
+rb.pattern <- "^RPL|^RPS"
+seurat_object[["percent.rb"]] <- PercentageFeatureSet(object = seurat_object, pattern = rb.pattern)
+ 
+seurat_object <- subset(seurat_object, Celltype %in% c("Alpha", "Beta cell", "Gamma"))
+
+prename <- "CNP0001469_monkey_pan_sn"
+# 2) QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+seurat_object$group <- seurat_object$orig.ident
+
+seurat_object <- subset(seurat_object, nFeature_RNA > 200 & nFeature_RNA < 4000 & nCount_RNA < 10000 & percent.mt < 2 & percent.rb < 1)
+# GSM7065665_pig_pan_sn 
+#                1314 
+# 3) pca
+seurat_object$orig.ident <- factor(seurat_object$Sample)
+seurat_object@active.ident <- factor(seurat_object$Sample)
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# 4)  batch correction -> find clusters
+seurat_object$orig.ident <- seurat_object$Batch
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 30, do.correction = TRUE,
+																							assay.use = "RNA", normalization.method = "LogNormalize", file.prefix = prename, correct.method = "Harmony")
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+seurat_object$seurat_clusters <- seurat_object@active.ident
+
+seurat_object <- subset(seurat_object, idents = c(1, 2, 3, 6, 8))
+
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_cluster"), mt.rb.pattern = "^RP[SL]")
+
+levels_define <- c("Beta", "Beta", "alpha", "alpha", "delta")
+new.cluster.ids <- levels_define
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+seurat_object$seurat_clusters <- seurat_object@active.ident
+
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_celltype"), mt.rb.pattern = "^RP[SL]")
+
+plots <- scScape::GenerateClusterPlot(object = seurat_object, file.prefix = prename, pt.size = 0.5) # 22056 cells
+saveRDS(seurat_object, "20230529_CNP0001469_monkey_pan_islet_sn.rds")
+
+```
+
+## 5. process mouse data
+### download data
+```{bash}
+## download data
+# GSE84133 # manually download and then upload
+# GSM2230761_mouse1_umifm_counts.csv.gz
+# GSM2230762_mouse2_umifm_counts.csv.gz
+# GSE125588_GSM3577882
+cd /home/zhengjh/projects/Pancreas/Data/mouse_data/GSE125588_GSM3577882
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM3577nnn/GSM3577882/suppl/GSM3577882_normal_panc_barcodes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM3577nnn/GSM3577882/suppl/GSM3577882_normal_panc_genes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM3577nnn/GSM3577882/suppl/GSM3577882_normal_panc_matrix.mtx.gz
+
+# GSE128565_GSM3680207 
+cd /home/zhengjh/projects/Pancreas/Data/mouse_data/GSE128565_GSM3680207
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM3680nnn/GSM3680207/suppl/GSM3680207_G1_counts.tar.gz
+
+# GSE203376_GSM6170636
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6170nnn/GSM6170636/suppl/GSM6170636_CD_barcodes.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6170nnn/GSM6170636/suppl/GSM6170636_CD_features.tsv.gz
+wget https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM6170nnn/GSM6170636/suppl/GSM6170636_CD_matrix.mtx.gz
+```
+
+### process data
+#### 1) analyze GSE125588_GSM3577882
+```{r analyze GSE125588_GSM3577882}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/")
+
+# 1. analyze GSE125588_GSM3577882, Mixed background: C57BL/6 +FVB, normal mouse pancreas; 60 days, the percent of islets cell is low, so give up
+mm_exp_5588 <- Read10X(data.dir = "/home/zhengjh/projects/Pancreas/Data/mouse_data/GSE125588_GSM3577882")
+dim(mm_exp_5588) # 27998  2644
+
+seurat_object <- CreateFirstFilterSeuratObject(counts = mm_exp_5588, pr.name  = "mm_exp_5588", min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^mt-", rb.pattern = "^Rpl|^Rps")
+
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 6000 & nCount_RNA < 100000 & percent.mt < 20 & percent.rb < 20)
+dim(seurat_object) # 14496  1837
+
+prename <- "mouse_exp_5588"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+# mm_exp_5588
+# 1591 
+
+# pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+
+# Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.4
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_cluster"), mt.rb.pattern = "^mt-|Rp[sl]",
+																 min.pct = 0.25, logfc.threshold = 0.5)
+pdf("20230530_mouse_exp_5588r_expression.pdf", width = 12, height = 9)
+FeaturePlot(seurat_object, features = c("Gcg", "Ins1", "Ins2", "Sst", "Ppy"))
+dev.off()
+
+
+```
+
+#### 2) analyze GSE203376_GSM6170636
+```{r analyze GSE203376_GSM6170636}
+# analyze GSE203376_GSM6170636
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/")
+
+mm_exp_3376 <- Read10X(data.dir = "/home/zhengjh/projects/Pancreas/Data/mouse_data/GSE203376_GSM6170636")
+dim(mm_exp_3376) # 27998  6794880
+
+seurat_object <- CreateFirstFilterSeuratObject(counts = mm_exp_3376, pr.name  = "mm_exp_3376", min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^mt-", rb.pattern = "^Rpl|^Rps")
+dim(seurat_object)
+# 18556 537128
+
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 6000 & nCount_RNA < 100000 & percent.mt < 20 & percent.rb < 20)
+dim(seurat_object) # 18556  10704
+
+prename <- "mouse_exp_3376"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+# mm_exp_3376
+# 10704 
+
+# pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+
+# Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.4
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object <- subset(seurat_object, idents = c(3, 7, 1, 2, 4, 5, 8, 10, 6, 11))
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+# Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.1.1
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_cluster"), mt.rb.pattern = "^mt-|Rp[sl]",
+																 min.pct = 0.25, logfc.threshold = 0.5)
+pdf("20230530_mouse_exp_5588r_expression.pdf", width = 12, height = 9)
+FeaturePlot(seurat_object, features = c("Gcg", "Ins1", "Ins2", "Sst", "Ppy"))
+dev.off()
+
+
+new.cluster.ids <- c("beta", "beta", "beta", "doublets", "alpha", "delta", "alpha", "beta", "doublets", "PP", "doublets", "beta")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object <- subset(seurat_object, idents = c("beta", "alpha", "delta", "PP"))
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+## remove confused cells
+seurat_object <- subset(seurat_object, idents = c(1, 2, 3, 4, 7))
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+FeaturePlot(seurat_object, features = c("Gcg", "Ins1", "Ins2", "Sst", "Ppy"))
+
+new.cluster.ids <- c("beta", "beta", "alpha", "delta", "PP")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+DimPlot(seurat_object, label = T)
+seurat_object$celltype_assign <- seurat_object@active.ident
+saveRDS(seurat_object, "20230530_final_mouse_exp_3376_islets.rds")
+```
+
+#### 3) analyze GSE128565_GSM3680207
+```{r analyze GSE128565_GSM3680207}
+
+# analyze GSE203376_GSM6170636
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/")
+
+# GSE128565_GSM3680207
+mm_exp_8565 <- Read10X(data.dir = "/home/zhengjh/projects/Pancreas/Data/mouse_data/GSE128565_GSM3680207")
+dim(mm_exp_8565) # 27998  7790
+
+seurat_object <- CreateFirstFilterSeuratObject(counts = mm_exp_8565, pr.name  = "mm_exp_8565", min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^mt-", rb.pattern = "^Rpl|^Rps")
+dim(seurat_object)
+# 16605 7790
+
+prename <- "mm_exp_8565_original"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 6000 & nCount_RNA < 60000 & percent.mt < 20 & percent.rb < 20)
+dim(seurat_object) # 16605  7649
+
+prename <- "mm_exp_8565_final"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+#mm_exp_8565 
+# 7649
+
+# pca
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+
+# Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_cluster"), mt.rb.pattern = "^mt-|Rp[sl]",
+																 min.pct = 0.1, logfc.threshold = 0.25)
+
+seurat_object <- subset(seurat_object, idents = c(1, 2, 3, 4, 5, 6, 7, 9, 10, 11))
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 20, do.correction = F, assay.use = "RNA")
+
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object <- subset(seurat_object, idents = c(1, 2, 3, 4, 5, 6, 8, 9))
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, file.prefix = prename, npc.used = 15, do.correction = F, assay.use = "RNA")
+
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+## celltype 
+new.cluster.ids <- c("beta", "beta", "beta", "alpha", "beta", "delta", "PP", "beta")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+markers <- FindmarkerForCluster(object = seurat_object, file.prefix = paste0(prename, "_celltype"), mt.rb.pattern = "^mt-|Rp[sl]",
+																 min.pct = 0.1, logfc.threshold = 0.25)
+
+saveRDS(seurat_object, "20230601_final_mouse_exp_8565_islets.rds")
+
+```
+
+#### 4) analyze GSE84133_GSM2230761_mouse1 GSM2230762_mouse2 data 
+```{r process mouse data}
+
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/")
+
+# GSE84133_GSM2230761_mouse1 GSM2230762_mouse2
+mm_exp_4133_1 <- read.csv("/home/zhengjh/projects/Pancreas/Data/mouse_data/GSM2230761_mouse1_umifm_counts.csv", header = T, row.names = 1)
+celltype_41331 <- mm_exp_4133_1$assigned_cluster
+dim(mm_exp_4133_1) # 822 14880
+mm_exp_4133_1 <- t(mm_exp_4133_1[, 3:ncol(mm_exp_4133_1)])
+dim(mm_exp_4133_1) # 14878   822
+mm_exp_4133_2 <- read.csv("/home/zhengjh/projects/Pancreas/Data/mouse_data/GSM2230762_mouse2_umifm_counts.csv", header = T, row.names = 1)
+dim(mm_exp_4133_2) # 1064 14880
+celltype_41332 <- mm_exp_4133_2$assigned_cluster
+mm_exp_4133_2 <- t(mm_exp_4133_2[, 3:ncol(mm_exp_4133_2)])
+dim(mm_exp_4133_2) # 14878   1064
+
+## creatseuratobject
+exp_list <- list(mm_exp_4133_1 = mm_exp_4133_1, mm_exp_4133_2 = mm_exp_4133_2)
+object.list <- list()
+for (i in 1:length(exp_list)){
+	colnames(exp_list[[names(exp_list)[i]]]) <- paste(names(exp_list)[i], colnames(exp_list[[names(exp_list)[i]]]), sep = "_")
+	object.list[[names(exp_list)[i]]] <- CreateFirstFilterSeuratObject(counts = exp_list[[i]], pr.name  = names(exp_list)[i], min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^mt-", rb.pattern = "^Rpl|^Rps")
+}
+
+object.list$mm_exp_4133_1$celltype_paper <- celltype_41331
+object.list$mm_exp_4133_2$celltype_paper <- celltype_41332
+# merge object
+seurat_object <- merge(x = object.list[[1]], y = object.list[2:length(object.list)])
+prename <- "mm_exp_4133_original"
+
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+
+# mm_exp_4133_1 mm_exp_4133_2 
+# 822          1064    
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 6000 & nCount_RNA < 60000 & percent.mt < 20 & percent.rb < 20)
+seurat_object <- subset(seurat_object, celltype_paper %in% c("alpha", "beta", "delta", "gamma"))
+table(seurat_object$orig.ident)
+# mm_exp_4133_1 mm_exp_4133_2
+# 451          892        
+
+# 3) pca
+prename <- "mm_exp_4133_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 15, correct.method = "Harmony", assay.use = "RNA", file.prefix = prename)
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.1.6
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object <- subset(seurat_object,idents = 12, invert = T)
+
+new.cluster.ids <- c("beta", "beta", "beta", "beta", "beta", "delta", "alpha", "delta", "beta", "alpha", "PP")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+seurat_object$celltype_assign <- seurat_object@active.ident
+
+saveRDS(seurat_object, "20230601_final_mouse_exp_4133_islets.rds")
+
+```
+#### 5) combine GSE203376, GSE128565, GSE84133 
+
+```{r combine GSE203376, GSE28565, GSE84133}
+
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis")
+
+exp_4133 <- readRDS("20230601_final_mouse_exp_4133_islets.rds")
+exp_8565 <- readRDS("20230601_final_mouse_exp_8565_islets.rds")
+exp_3376 <- readRDS("20230530_final_mouse_exp_3376_islets.rds")
+
+exp_4133$celltype_assign <- exp_4133@active.ident
+exp_8565$celltype_assign <- exp_8565@active.ident
+exp_3376$celltype_assign <- exp_3376@active.ident
+
+
+exp_4133$age <- "unknown"
+exp_4133$strain <- c(rep("ICR", 449), rep("C57BLJ/6", 878))
+exp_8565$age <- "8wk"
+exp_8565$strain <- "C57BLJ/6"
+exp_3376$age <- "12wk"
+exp_3376$strain <- "C57BLJ/6"
+object.list <- list(exp_4133 = exp_4133, exp_8565 = exp_8565, exp_3376 = exp_3376)
+
+seurat_object <- merge(x = object.list[[1]], y = object.list[2:length(object.list)])
+
+prename <- "mm_combine_4133_8565_3376"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 15, correct.method = "Harmony", assay.use = "RNA", file.prefix = prename)
+## seurat correct is better than harmony
+seurat_object_seuratcorrect <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 15, correct.method = "Seurat", assay.use = "RNA", file.prefix = prename)
+
+saveRDS(seurat_object_seuratcorrect, "20230601_final_combine_mouse_4133_8565_3376.rds")
+
+seurat_object_seuratcorrect@active.ident <- factor(seurat_object_seuratcorrect$celltype_assign)
+plots <- scScape::GenerateClusterPlot(object = seurat_object_seuratcorrect, file.prefix = prename, pt.size = 0.5) # 22056 cells
+
+```
+
+## 6. process human data
+### 1) download human data
+```{r download human}
+# download human data from local and then upload to server
+
+```
+### 2) process GSE84133 data
+
+```{r process GSE84133 data}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis")
+
+file_path <- list.files("/home/zhengjh/projects/Pancreas/Data/human_data/GSE84133_RAW", full.names = T)
+
+exp_combined <- c()
+for (i in 1:length(file_path)){
+	temp <- read.csv(file_path[i], header = T, row.names = 1)
+	temp$group <- paste0("human_", i)
+	exp_combined <- rbind(exp_combined, temp)
+}
+
+celltype_paper <- exp_combined$assigned_cluster
+group <- exp_combined$group
+
+exp_combined <- exp_combined[ , 3:(ncol(exp_combined) - 1)]
+exp_combined <- t(exp_combined)
+
+
+seurat_object <- CreateFirstFilterSeuratObject(counts = exp_combined, pr.name  = "human_GSE84133", min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+	
+seurat_object$orig.ident <- group
+seurat_object$celltype_paper <- celltype_paper
+prename <- "human_GSE84133"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+# human_1 human_2 human_3 human_4 
+# 1937    1724    3605    1303  
+
+# filter 
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 4000 & nCount_RNA < 20000 & percent.mt < 20 & percent.rb < 20)
+seurat_object <- subset(seurat_object, celltype_paper %in% c("alpha", "beta", "delta", "gamma", "epsilon"))
+table(seurat_object$orig.ident)
+# human_1 human_2 human_3 human_4 
+# 1344    1227    1986     922     
+
+# 3) pca
+prename <- "human_GSE84133_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, correct.method = "Harmony", assay.use = "RNA", file.prefix = prename)
+
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.4
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object <- subset(seurat_object,idents = 7, invert = T)
+seurat_object$celltype_assign <- seurat_object$celltype_paper
+seurat_object$celltype_assign  <- gsub("gamma", "PP", seurat_object$celltype_assign)
+seurat_object@active.ident <- factor(seurat_object$celltype_assign)
+
+saveRDS(seurat_object, "20230601_human_islets_GSE84133_final.rds")
+```
+
+### 3) process E-MTAB-5061 data
+```{r process E-MTAB-5061 data}
+
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis")
+
+file_path <- list.files("/home/zhengjh/projects/Pancreas/Data/human_data/E-MTAB-5061/", full.names = T)
+
+library(data.table)
+exp_combined <- fread("/home/zhengjh/projects/Pancreas/Data/human_data/E-MTAB-5061/E-MTAB-5061_pancreas_refseq_rpkms_counts_3514sc.txt")
+# 1:3515是rpkm值， 后面3515列是count
+samplename <- colnames(exp_combined)[2:3515]
+genename <- exp_combined$`#samples` 
+exp_combined <- exp_combined[, 3517:7030] # 表格的话列名是对错了一格
+colnames(exp_combined) <- samplename
+exp_combined$genename <- genename
+dim(exp_combined) #  26271  3515
+
+# 使用 data.table 转换为数据框
+exp_combined <- data.table(exp_combined)
+# 将重复的行名合并为单个行，并使用均值作为合并后行的值
+exp_combined <- exp_combined[, lapply(.SD, mean), by = genename]
+rownames(exp_combined) <- exp_combined$genename
+genename <- exp_combined$genename
+
+exp_combined$genename <- NULL
+exp_combined <- as.matrix(exp_combined) #  25526  3514
+
+# 提取出normal细胞
+meta <- read.table("/home/zhengjh/projects/Pancreas/Data/human_data/E-MTAB-5061/E-MTAB-5061.sdrf.txt", header = T, sep = "\t")
+index <- meta$Factor.Value..disease. == "normal" & meta$Characteristics..inferred.cell.type. %in% c("alpha cell", "beta cell", "delta cell", 
+																																																				"gamma cell", "epsilon cell")
+# 提取出normal细胞的表达谱
+meta <- meta[index, ]
+exp_combined <- exp_combined[ , meta$Source.Name]
+rownames(exp_combined) <- genename 
+seurat_object <- CreateFirstFilterSeuratObject(counts = exp_combined, pr.name  = "human_E-MTAB-5061", min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+
+seurat_object$orig.ident <- meta$Characteristics..individual.
+seurat_object$celltype_paper <- meta$Characteristics..inferred.cell.type.
+prename <- "human_E-MTAB-5061"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+
+table(seurat_object$orig.ident)
+# H1  H2  H3  H4  H5  H6 
+# 54 206  76 179  65 173     
+
+# 3) pca
+prename <- "human_E-MTAB-5061_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, 
+																							correct.method = "Harmony", assay.use = "RNA", file.prefix = prename)
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object$celltype_assign <- seurat_object$celltype_paper
+seurat_object$celltype_assign  <- gsub("gamma", "PP", seurat_object$celltype_assign)
+seurat_object$celltype_assign  <- gsub("cell", "", seurat_object$celltype_assign)
+seurat_object@active.ident <- factor(seurat_object$celltype_assign)
+
+saveRDS(seurat_object, "20230627_human_E-MTAB-5061_final.rds")
+```
+
+### 4) process GSE81547 data
+```{r}
+rm(list = ls())
+
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/")
+
+file_path <- list.files("/home/zhengjh/projects/Pancreas/Data/human_data/GSE81547_RAW", full.names = T)
+
+temp <- read.csv(file_path[1], header=T, sep="\t", row.names=1)
+exp_combined <- data.frame(matrix(ncol=length(file_path), nrow=nrow(temp)))
+colnames(exp_combined) <- sapply(file_path, function(x) strsplit(strsplit(x, "/")[[1]][9], "_")[[1]][1])
+
+# 循环迭代读取数据框，并将它们添加到exp_combined中
+for (i in 1:length(file_path)){
+    print(i)
+    temp <- read.csv(file_path[i], header=T, sep="\t", row.names=1)
+    exp_combined[, colnames(exp_combined)[i]] <- temp[, 1]
+}
+
+rownames(exp_combined) <- rownames(temp)
+## meta 
+meta <- read.xlsx("/home/zhengjh/projects/Pancreas/Data/human_data/GSE81547_meta_information.xlsx", colNames = T)
+meta$age <- factor(meta$age)
+all.equal(meta$geo_accession, colnames(exp_combined))
+# TRUE
+seurat_object <- CreateFirstFilterSeuratObject(counts = exp_combined, pr.name  = "human_GSE81547", min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+
+seurat_object$orig.ident <- as.character(meta$age)
+prename <- "human_GSE81547"
+GenerateQCPlot(seurat_object, file.prefix = prename)
+table(seurat_object$orig.ident)
+# 1yr 21yr 22yr 38yr 44yr 54yr  5yr  6yr 
+# 221  505  286  474  277  272  331  178 
+
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 4000 & nCount_RNA < 50000 & percent.mt < 20 & percent.rb < 30)
+
+# 3) pca
+prename <- "human_GSE81547_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object$orig.ident <- meta$age
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, correct.method = "Harmony", 
+																							assay.use = "RNA", file.prefix = prename)
+
+# 5) Find cluster markers and cell type annotation
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.5
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+## 提取出内分泌细胞，重新聚类
+seurat_object <- subset(seurat_object, idents = c(1, 2, 5, 6, 8))
+# pca
+prename <- "human_GSE81547_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, correct.method = "Harmony", 
+																							assay.use = "RNA", file.prefix = prename)
+
+# assign celltype 
+new.cluster.ids <- c("alpha", "alpha", "beta", "alpha", "alpha", "alpha", "beta", "beta", "delta", "PP")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object$celltype_assign <- seurat_object@active.ident
+
+saveRDS(seurat_object, "20230627_human_islets_GSE81547_final.rds")
+
+```
+
+
+### 5) process GSE114297 data
+```{r process GSE114297 data}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/")
+file_path <- "/home/zhengjh/projects/Pancreas/Data/human_data/GSE114297_RAW/"
+file_name <- list.files(path = file_path)
+object.list <- list()
+for (i in 1:length(file_name)){
+	temp <- Read10X(data.dir = paste0(file_path, file_name[i]))
+	colnames(temp) <- paste(file_name[i], colnames(temp), sep = "_")
+	  temp <- CreateFirstFilterSeuratObject(counts = temp, pr.name = file_name[i], min.cell = 3,
+	  																			min.gene = 3, mt.pattern = "^MT-", rb.pattern = "^RPL|^RPS")
+  object.list[[file_name[i]]] <- temp
+  rm(temp)
+}
+
+# merge object
+seurat_object <- merge(x = object.list[[1]], y = object.list[2:length(object.list)])
+prename <- "human_GSE114297"
+dim(seurat_object) #  19167 genes * 20784 cells
+# 2) QC
+GenerateQCPlot(object = seurat_object, file.prefix = prename)
+
+seurat_object <- subset(seurat_object, nFeature_RNA > 300 & nFeature_RNA < 4000 & nCount_RNA < 50000 & percent.mt < 20 & percent.rb < 30)
+dim(seurat_object) # 19167 gene * 19701 cells
+# 3) pca
+prename <- "human_GSE114297_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, correct.method = "Harmony", 
+																							assay.use = "RNA", file.prefix = prename)
+
+
+## 提取出内分泌细胞，重新聚类
+seurat_object <- subset(seurat_object, idents = c(1, 2, 3, 6, 16, 21, 0, 4, 5, 7, 8, 18, 19, 22, 9, 14))
+# pca
+prename <- "human_GSE114297_final"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+# batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, correct.method = "Harmony", 
+																							assay.use = "RNA", file.prefix = prename)
+
+seurat_object@active.ident <- seurat_object$RNA_snn_res.0.8
+
+# RenameIdents from zero to one
+levels_define <- as.numeric(levels(seurat_object))
+new.cluster.ids <- levels_define + 1
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object <- subset(seurat_object, idents = 13, invert = T)
+
+# assign celltype 
+new.cluster.ids <- c("alpha", "beta", "alpha", "beta", "beta", "delta", "alpha", "PP", "beta", "beta", "beta", "beta")
+names(new.cluster.ids) <- levels(seurat_object)
+seurat_object <- RenameIdents(seurat_object, new.cluster.ids)
+
+seurat_object$celltype_assign <- as.character(seurat_object@active.ident)
+
+seurat_object$celltype_assign[seurat_object@assays$RNA@data["GHRL", ] > 1.5 & seurat_object$celltype_assign == "PP"] <- "epsilon"
+seurat_object$celltype_assign <- factor(seurat_object$celltype_assign)
+seurat_object@active.ident <- seurat_object$celltype_assign
+
+saveRDS(seurat_object, "20230627_human_islets_GSE114297_final.rds")
+
+```
+
+### 7) combine GSE84133, E-MTAB-5061, GSE81547, GSE114297 data
+```{r combine data}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+library(clustree)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/")
+
+exp_4133 <- readRDS("20230601_human_islets_GSE84133_final.rds")
+exp_5061 <- readRDS("20230627_human_E-MTAB-5061_final.rds")
+exp_4297 <- readRDS("20230627_human_islets_GSE114297_final.rds")
+exp_1547 <- readRDS("20230627_human_islets_GSE81547_final.rds")
+
+exp_4133$orig.ident <- paste("GSE84133", exp_4133$orig.ident, sep = "_")
+exp_5061$orig.ident <- paste("E-MTAB-5061", exp_5061$orig.ident, sep = "_")
+exp_4297$orig.ident <- paste("GSE114297", exp_4297$orig.ident, sep = "_")
+exp_1547$orig.ident <- paste("GSE81547", exp_1547$orig.ident, sep = "_")
+
+table(exp_4133$orig.ident)
+table(exp_5061$orig.ident)
+table(exp_4297$orig.ident)
+table(exp_1547$orig.ident)
+
+exp_4133$celltype_assign <- exp_4133@active.ident
+exp_5061$celltype_assign <- exp_5061@active.ident
+exp_4297$celltype_assign <- exp_4297@active.ident
+exp_1547$celltype_assign <- exp_1547@active.ident
+
+exp_4133$age <- c(rep("17yr", 1338), rep("51yr", 1214), rep("38yr", 1913), rep("59yr", 918))
+exp_4133$sex <- c(rep("male", 1338), rep("female", 1214), rep("male", 1913), rep("female", 918))
+
+exp_5061$age <- c(rep("43yr", 54), rep("25yr", 206), rep("48yr", 76), rep("22yr", 179), rep("27yr", 65), rep("23yr", 173))
+exp_5061$sex <- c(rep("male", 54), rep("male", 206), rep("female", 76), rep("male", 179), rep("male", 65), rep("male", 173))
+
+exp_4297$age <- "unknown"
+exp_4297$sex <- c(rep("female", 1438), rep("male", 808), rep("male", 1392), rep("male", 1286), 
+									rep("male", 917), rep("female", 301), rep("male", 1338), rep("male", 1326),
+									rep("male", 1342), rep("female", 1703), rep("female", 1861), rep("male", 2397))
+
+exp_1547$age <- exp_1547$orig.ident
+exp_1547$sex <- c(rep("male", 120), rep("male", 339), rep("male", 245), rep("female", 303), 
+									rep("female", 180), rep("male", 212), rep("male", 104), rep("male", 123))
+
+object.list <- list(exp_4133 = exp_4133, exp_5061 = exp_5061, exp_4297 = exp_4297, exp_1547 = exp_1547)
+
+seurat_object <- merge(x = object.list[[1]], y = object.list[2:length(object.list)])
+seurat_object$celltype_assign <- gsub(" ", "", seurat_object$celltype_assign)
+prename <- "human_combine_4133_5061_4297_1547"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+
+seurat_object$group <- unlist(lapply(strsplit(as.character(seurat_object$orig.ident), "_"), function(x) x[1]))
+# 4) batch correction and find clusters
+seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 25, correct.method = "Harmony", 
+																							assay.use = "RNA", file.prefix = prename)
+
+seurat_object$celltype_assign <- factor(seurat_object$celltype_assign)
+seurat_object@active.ident <- seurat_object$celltype_assign
+saveRDS(seurat_object, "20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+
+plots <- scScape::GenerateClusterPlot(object = seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+```
+
+## 7. mouse, rat, pig, monkey and human data analysis
+
+### 1. plot clustering 
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230628_combine_five_species_results")
+
+library(Seurat)
+library(scScape)
+library(clustree)
+
+# 1. mouse 
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+mm_seurat_object$celltype_assign <- factor(mm_seurat_object$celltype_assign, levels = c("alpha", "beta", "delta", "PP"))
+mm_seurat_object@active.ident <- mm_seurat_object$celltype_assign
+prename <- "mm_combine_mouse_4133_8565_337"
+plots_mm <- scScape::GenerateClusterPlot(object = mm_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+mm_seurat_object$orig.ident <- "mouse_sc"
+prename <- "mm_combine_mouse_4133_8565_337_combine_samedata_percentage"
+plots_mm_combine_samedata <- scScape::GenerateClusterPlot(object = mm_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+# 2. rat
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+rat_seurat_object$celltype_assign <- factor(rat_seurat_object$celltype_assign, levels = c("alpha", "beta", "delta", "PP"))
+rat_seurat_object@active.ident <- rat_seurat_object$celltype_assign
+prename <- "rat_GSE203412_"
+plots_rat <- scScape::GenerateClusterPlot(object = rat_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+prename <- "rat_GSE203412_combine_samedata_percentage"
+rat_seurat_object$orig.ident <- "rat_sc"
+plots_rat_combine_samedata <- scScape::GenerateClusterPlot(object = rat_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+# 3. pig
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+pig_seurat_object$celltype_assign <- factor(pig_seurat_object$celltype_assign, levels = c("alpha", "beta", "delta", "PP"))
+pig_seurat_object@active.ident <- pig_seurat_object$celltype_assign
+prename <- "pig_GSE198623_"
+plots_pig <- scScape::GenerateClusterPlot(object = pig_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+prename <- "pig_GSE198623_combine_samedata_percentage"
+pig_seurat_object$orig.ident <-  "pig_sc"
+plots_pig_combine_samedata <- scScape::GenerateClusterPlot(object = pig_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+# 4. monkey
+# sc
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+mk_sc_seurat_object$celltype_assign <- mk_sc_seurat_object@active.ident
+prename <- "monkey_GSE120180_sc_"
+plots_mk_sc <- scScape::GenerateClusterPlot(object = mk_sc_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+prename <- "monkey_GSE120180_sc_combine_samedata_percentage"
+mk_sc_seurat_object$orig.ident <- "monkey_sc"
+plots_mk_sc_combine_samedata <- scScape::GenerateClusterPlot(object = mk_sc_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+# sn
+mk_sn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230529_CNP0001469_monkey_pan_islet_sn.rds")
+mk_sn_seurat_object$celltype_assign <- mk_sn_seurat_object@active.ident
+prename <- "monkey_CNP0001469_sn_"
+plots_mk_sn <- scScape::GenerateClusterPlot(object = mk_sn_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+prename <- "monkey_CNP0001469_sn_combine_samedata_percentage"
+mk_sn_seurat_object$orig.ident <- "monkey_sn"
+plots_mk_sn_combine_samedata <- scScape::GenerateClusterPlot(object = mk_sn_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+# 5. human
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+hn_seurat_object$celltype_assign <- factor(hn_seurat_object$celltype_assign, levels = c("alpha", "beta", "delta", "PP", "epsilon"))
+hn_seurat_object@active.ident <- hn_seurat_object$celltype_assign
+prename <- "hn_combine_4133_5061_1547_4297"
+plots_hn <- scScape::GenerateClusterPlot(object = hn_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+hn_seurat_object$orig.ident <- "human_sc"
+prename <- "hn_combine_4133_5061_1547_4297_ombine_samedata_percentage"
+plots_hn_combine_samedata <- scScape::GenerateClusterPlot(object = hn_seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+plots_list <- list(plots_mm = plots_mm_combine_samedata, plots_rat = plots_rat_combine_samedata,
+									plots_pig = plots_pig_combine_samedata,
+									plots_mk_sc = plots_mk_sc_combine_samedata,
+									plots_hn = plots_hn_combine_samedata)
+library(cowplot)
+
+
+grid <- list()
+
+for ( i in 1:length(plots_list)){
+	temp <- plots_list[[i]]
+	temp$p_tsne <- temp$p_tsne + NoLegend()
+  temp$percentageplot <- temp$percentageplot + NoLegend()
+
+  # 绘制两个图表
+  p1 <-temp$p_tsne
+  p2 <-  temp$percentageplot
+  
+  # 将两个图表放在一个网格中，并设置相对宽度和高度
+  grid[[i]] <- plot_grid(p1, p2, ncol = 2, align = "hv", axis = "lr", rel_widths = c(5, 1), rel_heights = c(1,1))
+
+}
+
+plots_final <- plot_grid(plotlist = grid, ncol = 5, labels = c("mouse_sc: 15,372 cells", "rat_sc: 7,584 cells",
+																															 "pig_sc: 20, 414 cells", "monkey_sc: 2,924 cells", "human_sc: 23,871 cells"))
+
+
+pdf("20230628_final_pancreas_figure1a_clustering_percentage.pdf", width = 60, height = 10)
+plots_final
+dev.off()
+
+
+## cell number 
+
+cellnumber <- c()
+for (i in 1:length(plots_list)){
+	cellnumber <- rbind(cellnumber, plots_list[[i]]$percentageplot$data)
+}
+
+write.xlsx(cellnumber, "20230628_final_pancreas_cellnumber.xlsx")
+```
+
+
+# 20230804 Figure 1 Conservation of endocrine signatures
+## 1. Expression of islet hormones and known endocrine and lineage transcription factors 
+```{r Expression of islet hormones and known endocrine and lineage transcription factors }
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis")
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+rat_seurat_object@active.ident <- rat_seurat_object$celltype_assign
+rat_seurat_object$celltype_assign <- factor(as.character(rat_seurat_object$celltype_assign), levels = c("alpha", "beta", "delta", "PP"))
+rat_seurat_object@active.ident <- rat_seurat_object$celltype_assign
+saveRDS(rat_seurat_object, "/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+pig_seurat_object$celltype_assign <- factor(as.character(pig_seurat_object$celltype_assign), levels = c("alpha", "beta", "delta", "PP"))
+pig_seurat_object@active.ident <- pig_seurat_object$celltype_assign
+saveRDS(pig_seurat_object, "/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+hn_seurat_object$celltype_assign <- factor(as.character(hn_seurat_object$celltype_assign), levels = c("alpha", "beta", "delta", "PP", "epsilon"))
+hn_seurat_object@active.ident <- hn_seurat_object$celltype_assign
+saveRDS(hn_seurat_object, "/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+levels(mm_seurat_object)
+levels(rat_seurat_object)
+levels(pig_seurat_object)
+levels(mk_sc_seurat_object)
+levels(hn_seurat_object)
+
+genes <- read.xlsx("islet_hormones_and_known_endocrine_transcription_factors.xlsx")
+
+plot_dot <- function(seurat_object, plot_features){
+	DefaultAssay(seurat_object) <- "RNA"
+	p_dotplot <- DotPlot(seurat_object, features = plot_features, col.min = 0, col.max = 1, scale = T, dot.min = 0.01)
+	p_dotplot <- p_dotplot + coord_flip()
+	p_dotplot <- p_dotplot + scale_colour_gradient2(low = "#FDE4D9", mid = "#ED6C4A", high = "#4A0E13",
+                                                midpoint = 0.5, breaks = c( 0, 0.5, 1), label = c(0, 0.5, 1))
+	p_dotplot <- p_dotplot + theme(axis.text.x = element_text(size = 10, vjust = 0.5, hjust = 0.5, angle = 45))
+	p_dotplot <- p_dotplot + theme(axis.line = element_blank())  # 移除原始的坐标轴线条
+	p_dotplot <- p_dotplot + theme(panel.border = element_rect(color = "black", fill = NA, size = 1))  # 添加方形边框
+	p_dotplot <- p_dotplot + xlab(NULL) + ylab(NULL) # 不显示坐标轴轴名称
+	return(p_dotplot)
+}
+
+p_mm <- plot_dot(seurat_object = mm_seurat_object, plot_features = na.omit(genes$mouse)) + NoLegend()
+p_rat <- plot_dot(seurat_object = rat_seurat_object, plot_features = na.omit(genes$rat)) + NoLegend()
+p_pig <- plot_dot(seurat_object = pig_seurat_object, plot_features = na.omit(genes$pig)) + NoLegend()
+p_mk <- plot_dot(seurat_object = mk_sc_seurat_object, plot_features = na.omit(genes$monkey)) + NoLegend()
+p_hn <- plot_dot(seurat_object = hn_seurat_object, plot_features = na.omit(genes$human))
+
+plots <- plot_grid(p_mm, p_rat, p_pig, p_mk, p_hn, ncol = 5, rel_widths = c(1, 1, 1, 1, 1.7), align = "hv")
+
+pdf("20230807_islets_figure1f_exp_hormones_and_known_endocrine_transcription_factors.pdf", width = 16, height = 8)
+plots
+dev.off()
+
+```
+
+## 2. 20230809 ortholog mapping
+### used species genename 
+```{r used species genename}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20230809_orthologs_mapping/")
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+genenames <- list(mouse = rownames(mm_seurat_object), rat = rownames(rat_seurat_object), 
+									pig = rownames(pig_seurat_object), monkey = rownames(mk_sc_seurat_object),
+									human = rownames(hn_seurat_object))
+saveRDS(genenames, "20230809_islets_fivespecies_allgene.rds" )
+write.xlsx(genenames, "20230809_islets_fivespecies_allgene.xlsx", colNames = T, rowNames = T)
+```
+
+### ortholog  mapping using ensemble biomart and NCBI HomoloGene  and gProfiler
+```{r ortholog gene mapping}
+ 
+rm(list = ls())
+## ensembl
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20230809_orthologs_mapping/")
+genenames <- readRDS("20230809_islets_fivespecies_allgene.rds")
+# select mouse as the reference genome
+library(openxlsx)
+library(dplyr)
+library(purrr)
+file_path <- "20230830_otherspecies_to_mouse_ortholog.xlsx" 
+all_sheets <- lapply(1:5, function(i) read.xlsx(file_path, sheet = i))
+names(all_sheets) <- getSheetNames(file_path)
+interest_genes <- purrr::map2(all_sheets, genenames, ~dplyr::filter(.x, `Gene.name` %in% .y))
+write.xlsx(interest_genes, "interest_genes.xlsx")
+
+
+# Check which genes in genenames are not in all_sheets
+missing_genes_list <- purrr::map2(genenames, all_sheets, ~ .x[!.x %in% .y$Gene.name])
+names(missing_genes_list) <- names(genenames)
+write.xlsx(missing_genes_list, "missing_genes_list.xlsx")
+
+missing_genes_list
+
+# explained variance
+calc_var_ratio <- function(seurat_obj, species, genes_list) {
+  
+  # Create a dataframe with the same structure as df_var
+  df_var <- data.frame(
+    matrix(nrow = length(levels(seurat_obj@active.ident)) + 1, ncol = 1, 
+    			 dimnames = list(c("all cells", levels(seurat_obj@active.ident)), c(species))),
+    stringsAsFactors = FALSE
+  )
+  
+  # Calculate variance ratio for the specified species
+  df <- apply(seurat_obj@assays$RNA@data, 1, var)
+  intersect_gene <- intersect(genes_list[[species]], names(df))
+  var_tot <- sum(df)
+  var_sub <- sum(df[intersect_gene])
+  cat(paste0("explained variance ", species, " - all cells: ", var_sub/var_tot, "\n"))
+  df_var["all cells", species] <- var_sub/var_tot
+  
+  for (group in levels(seurat_obj@active.ident)) {
+    temp <- subset(seurat_obj, idents = group)
+    df <- apply(temp@assays$RNA@data, 1, var)
+    intersect_gene <- intersect(genes_list[[species]], names(df))
+    var_tot <- sum(df)
+    var_sub <- sum(df[intersect_gene])
+    cat(paste0("explained variance ", species, " - ", group, " cells: ", var_sub/var_tot, "\n"))
+    df_var[group, species] <- var_sub/var_tot
+    rm(temp)
+  }
+  
+  return(df_var)
+}
+
+# read rds
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+genes_list <- list(mouse = unique(interest_genes$mouse_genename$Gene.name),
+									 rat = unique(interest_genes$rat_to_mouse$Gene.name),
+									 pig = unique(interest_genes$pig_to_mouse$Gene.name),
+									 monkey = unique(interest_genes$monkey_to_mouse$Gene.name),
+									 human = unique(interest_genes$human_to_mouse$Gene.name))
+
+mouse_df <- calc_var_ratio(seurat_obj = mm_seurat_object, species = "mouse", genes_list = genes_list)
+rat_df <-  calc_var_ratio(seurat_obj = rat_seurat_object, species = "rat", genes_list = genes_list)
+pig_df <- calc_var_ratio(seurat_obj = pig_seurat_object, species = "pig", genes_list = genes_list)
+monkey_df <- calc_var_ratio(seurat_obj = mk_sc_seurat_object, species = "monkey", genes_list = genes_list)
+human_df <- calc_var_ratio(seurat_obj = hn_seurat_object, species = "human", genes_list = genes_list)
+
+res_df <- list(mouse_df = mouse_df, rat_df = rat_df, pig_df = pig_df, 
+							 monkey_df = monkey_df, human_df = human_df)
+write.xlsx(res_df, "20231005_three_species_explained_variance_use_ensemble_mappinggene.xlsx", 
+					 rowNames = T, colNames = T)
+
+# mouse--> 95%
+# rat---> 94%
+# pig---> 91%
+# monkey---> 74%
+# human---> 90%
+
+file_name <- "20231006_new_missing_genes_list.xlsx"
+sheets <- 1:5  # 假设你要读取前5个sheet
+
+# 使用lapply简洁地读取所有sheet
+missing_genes_list <- lapply(sheets, function(sheet_num) read.xlsx(file_name, sheet = sheet_num))
+names(missing_genes_list) <- getSheetNames(file_name)
+
+## NCBI homolog
+library(homologene)
+homologene::taxData
+#    tax_id                      name_txt
+# 1   10090                  Mus musculus
+# 2   10116             Rattus norvegicus
+# 17   9544                Macaca mulatta 这个不是我们数据的猴子，只能说都是猴子
+# 19   9606                  Homo sapiens 
+# NCBI 配对的物种中没有猪的物种
+rat_to_mouse_homologene <- homologene(missing_genes_list$rat$genename, inTax = 10116,
+																			outTax = 10090, db = homologene::homologeneData)
+monkey_to_mouse_homologene <- homologene(missing_genes_list$monkey$genename, inTax = 9544,
+																			outTax = 10090, db = homologene::homologeneData)
+human_to_mouse_homologene <- homologene(missing_genes_list$human$genename, inTax = 9606,
+																			outTax = 10090, db = homologene::homologeneData)
+
+ncbi_genemap <- list(rat_to_mouse_homologene = rat_to_mouse_homologene, monkey_to_mouse_homologene = monkey_to_mouse_homologene,
+										 human_to_mouse_homologene = human_to_mouse_homologene)
+
+write.xlsx(ncbi_genemap, "20231006_ncbi_genemap.xlsx")
+
+## map_genelist 
+map_genelist <- list()
+map_genelist$mouse <- rownames(mm_seurat_object)
+map_genelist$rat <- interest_genes$rat_to_mouse[interest_genes$rat_to_mouse$Gene.name==interest_genes$rat_to_mouse$Mouse.gene.name,
+																								]
+
+
+### 20231009 最终用的每个物种比对到mouse上的基因 这里面是讲ensembl NCBI gProfiler一起比对的结果整合到一起
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20230809_orthologs_mapping")
+
+
+# read rds
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+file_name <- "20231008_map_genelist.xlsx"
+sheets <- 1:4  # 假设你要读取前5个sheet
+
+# 使用lapply简洁地读取所有sheet
+map_genelist <- lapply(sheets, function(sheet_num) read.xlsx(file_name, sheet = sheet_num))
+names(map_genelist) <- getSheetNames(file_name)
+
+genes_list <- list(mouse = rownames(mm_seurat_object),
+									 rat = unique(intersect(rownames(rat_seurat_object), map_genelist$rat_to_mouse$Gene.name)),
+									 pig = unique(intersect(rownames(pig_seurat_object), map_genelist$pig_to_mouse$Gene.name)),
+									 monkey = unique(intersect(rownames(mk_sc_seurat_object), map_genelist$monkey_to_mouse$Gene.name)),
+									 human = unique(intersect(rownames(hn_seurat_object), map_genelist$human_to_mouse$Gene.name)))
+
+length(genes_list$mouse)
+length(genes_list$rat)
+length(genes_list$pig)
+length(genes_list$monkey)
+length(genes_list$human)
+
+mouse_df <- calc_var_ratio(seurat_obj = mm_seurat_object, species = "mouse", genes_list = genes_list)
+rat_df <-  calc_var_ratio(seurat_obj = rat_seurat_object, species = "rat", genes_list = genes_list)
+pig_df <- calc_var_ratio(seurat_obj = pig_seurat_object, species = "pig", genes_list = genes_list)
+monkey_df <- calc_var_ratio(seurat_obj = mk_sc_seurat_object, species = "monkey", genes_list = genes_list)
+human_df <- calc_var_ratio(seurat_obj = hn_seurat_object, species = "human", genes_list = genes_list)
+
+genenames <- readRDS("20230809_islets_fivespecies_allgene.rds")
+missing_genes_list <- list(rat = setdiff(genenames$rat, genes_list$rat),
+													 pig = setdiff(genenames$pig, genes_list$pig),
+													 monkey = setdiff(genenames$monkey, genes_list$monkey),
+													 human = setdiff(genenames$human, genes_list$human))
+
+write.xlsx(missing_genes_list, "20231009_except_ensembl_ncbi_missing_genes_list.xlsx")
+
+```
+
+### 20231009 五个物种的表达谱都转化成小鼠的之后，合在一起聚类分析，计算pairwise correlation以及explained variance 
+
+#### 1. 将各个物种的表达谱利用mouse orthologs 对应成小鼠基因名字的表达谱 
+```{r}
+# 1. 将各个物种的表达谱利用mouse orthologs 对应成小鼠基因名字的表达谱 20231009-20231011 物种比对基因花了不少时间
+# a. 其中小鼠中有两个ins基因，大鼠中也有相对应两个ins基因, 猪，猴子和人类中仅有一个INS基因, 在很多研究中，Ins2通常被视为与其他哺乳动物的主要胰岛素基因（包括大鼠的Ins）更为同源的基因。而Ins1则因为某些在重复事件后发生的突变而稍微与Ins2有所不同。
+# 我们这里也是将INS对到Ins2上。
+# b. 对于小鼠中有两个基因的情况，其他物种中仅有一个基因的话，根据同源性更近的来定
+# c. 对于其他物种中有两个基因的话，则取两个基因的平均值
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20230809_orthologs_mapping")
+
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+
+##  物种的表达谱对应到小鼠的表达谱上
+
+# 函数实现
+library(Matrix)
+library(dplyr)
+
+convert_to_mouse_matrix <- function(species_matrix, gene_mapping) {
+  
+  # 获取非零条目的行索引和列索引
+  row_indices <- species_matrix@i + 1
+  col_indices <- rep(1:ncol(species_matrix), diff(species_matrix@p))
+
+  long_data <- data.frame(
+    Gene.name = rownames(species_matrix)[row_indices],
+    Sample = colnames(species_matrix)[col_indices],
+    Expression = species_matrix@x
+  )
+
+  # 转化为data.table
+  long_data_dt <- as.data.table(long_data)
+  gene_mapping_dt <- as.data.table(gene_mapping)
+
+  # 设置键，以加快合并操作
+  setkey(long_data_dt, Gene.name)
+  setkey(gene_mapping_dt, Gene.name)
+
+  # 使用data.table的方法进行高效合并
+  merged_data <- long_data_dt[gene_mapping_dt, nomatch=0]
+
+  # 使用data.table进行分组并计算每组的平均值
+  avg_data <- merged_data[, .(value = mean(Expression, na.rm = TRUE)), by = .(Mouse.gene.name, Sample)]
+
+  # 确定小鼠基因的顺序
+	unique_mouse_genes <- unique(avg_data$Mouse.gene.name)
+
+	# 使用这些平均值重新构建一个稀疏矩阵
+	result_matrix <- sparseMatrix(
+    i = match(avg_data$Mouse.gene.name, unique_mouse_genes), 
+    j = match(avg_data$Sample, colnames(species_matrix)), 
+    x = avg_data$value, 
+    dims = c(length(unique_mouse_genes), ncol(species_matrix))
+	)
+
+	# 设置行和列名
+	rownames(result_matrix) <- unique_mouse_genes
+	colnames(result_matrix) <- colnames(species_matrix)
+
+  return(result_matrix)
+}
+
+
+# 初始化Seurat对象和映射列表的列表
+species_list <- list(
+  rat = list(seurat_object = rat_seurat_object, mapping = map_genelist$rat_to_mouse),
+  pig = list(seurat_object = pig_seurat_object, mapping = map_genelist$pig_to_mouse),
+  monkey = list(seurat_object = mk_sc_seurat_object, mapping = map_genelist$monkey_to_mouse),
+  human = list(seurat_object = hn_seurat_object, mapping = map_genelist$human_to_mouse)
+)
+
+# 使用lapply处理每个物种
+result_matrices <- lapply(species_list, function(species_info) {
+  species_matrix <- species_info$seurat_object@assays$RNA@data[
+    intersect(species_info$mapping$Gene.name, rownames(species_info$seurat_object)), ]
+  convert_to_mouse_matrix(species_matrix, species_info$mapping)
+})
+
+result_matrices$mouse <- mm_seurat_object@assays$RNA@data
+
+saveRDS(result_matrices, "/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20230809_orthologs_mapping/20231011_species_matrix_to_mouse_matrix.rds")
+
+
+
+
+```
+
+#### 2. 五个物种的表达谱合在一起聚类分析
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering")
+
+library(scScape)
+species_matrix <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20230809_orthologs_mapping/20231011_species_matrix_to_mouse_matrix.rds")
+
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+mm_seurat_object$orig.ident <- mm_seurat_object$age
+mm_seurat_object$orig.ident <- gsub("12wk", "batch1", mm_seurat_object$orig.ident)
+mm_seurat_object$orig.ident <- gsub("8wk", "batch2", mm_seurat_object$orig.ident)
+mm_seurat_object$orig.ident <- gsub("unknown", "batch3", mm_seurat_object$orig.ident)
+
+
+species_names <- c("mouse","rat", "pig", "monkey", "human")
+species_seurat_objects <- list(mouse = mm_seurat_object, rat = rat_seurat_object, pig = pig_seurat_object, 
+															 monkey = mk_sc_seurat_object, human = hn_seurat_object) 
+species_seurat_objects$monkey$celltype_assign <- species_seurat_objects$monkey@active.ident
+new_objects <- list()
+
+for (species in species_names) {
+  new_objects[[species]] <- CreateFirstFilterSeuratObject(
+    counts = species_matrix[[species]], 
+    pr.name  = species, 
+    min.cell = 3,
+    min.gene = 3, 
+    mt.pattern = "^mt-", 
+    rb.pattern = "^Rpl|^Rps"
+  )
+}
+
+# match celltype 
+if (identical(colnames(new_objects$rat), colnames(species_seurat_objects$rat))) {
+  new_objects$rat$celltype_assign <- species_seurat_objects$rat$celltype_assign
+} else {
+  stop("The cell order in rat_to_mouse_object and rat_seurat_object doesn't match!")
+}
+
+for (species in species_names) {
+  if (identical(colnames(new_objects[[species]]), colnames(species_seurat_objects[[species]]))) {
+    new_objects[[species]]$celltype_assign <- species_seurat_objects[[species]]$celltype_assign
+  } else {
+    stop(paste0("The cell order in ", species, "_to_mouse_object and ", species, "_seurat_object doesn't match!"))
+  }
+	new_objects[[species]]$orig.ident <-  paste(species, species_seurat_objects[[species]]$orig.ident, sep = "_")
+	new_objects[[species]]$batch <- new_objects[[species]]$orig.ident
+}
+
+
+rm(species_matrix, mm_seurat_object, pig_seurat_object, mk_sc_seurat_object, hn_seurat_object, rat_seurat_object)
+
+seurat_object <- merge(x = new_objects[[1]], y = new_objects[2:length(new_objects)])
+
+prename <- "combine_five_species"
+seurat_object <- PerformPCA(object = seurat_object, file.prefix = prename, normalization.method = "LogNormalize")
+## harmony 矫正效果不好 换seurat CCA
+
+#seurat_object <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 25, correct.method = "Harmony", 
+#																							assay.use = "RNA", file.prefix = prename)
+# 这个挂到后台去跑了 有点慢
+seurat_object_seuratcorrect <- BatchCorrectionAndClustering(object = seurat_object, npc.used = 20, 
+																														correct.method = "Seurat", assay.use = "RNA", file.prefix = prename)
+
+seurat_object$celltype_assign <- factor(seurat_object$celltype_assign, levels = c("alpha", "beta", "delta", "PP", "epsilon"))
+seurat_object@active.ident <- seurat_object$celltype_assign
+seurat_object$group <- unlist(lapply(strsplit(as.character(seurat_object$orig.ident), "_"), function(x) x[1]))
+saveRDS(seurat_object, "20231011_final_combine_five_species.rds")
+
+plots <- scScape::GenerateClusterPlot(object = seurat_object, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+```
+
+
+#### 3. 合在一起的表达谱看下可以解释的变异
+
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering")
+
+seurat_object <- readRDS("20231011_final_combine_five_species.rds")
+
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+file_name <- "/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis//20230809_orthologs_mapping/20231008_map_genelist.xlsx"
+sheets <- 1:4  # 假设你要读取前5个sheet
+
+# 使用lapply简洁地读取所有sheet
+map_genelist <- lapply(sheets, function(sheet_num) read.xlsx(file_name, sheet = sheet_num))
+names(map_genelist) <- getSheetNames(file_name)
+
+## 1. 计算这些比对的基因的可解释变异
+# explained variance
+calc_var_ratio <- function(seurat_obj, species, genes_list) {
+  
+  # Create a dataframe with the same structure as df_var
+  df_var <- data.frame(
+    matrix(nrow = length(levels(seurat_obj@active.ident)) + 1, ncol = 1, 
+    			 dimnames = list(c("all cells", levels(seurat_obj@active.ident)), c(species))),
+    stringsAsFactors = FALSE
+  )
+  
+  # Calculate variance ratio for the specified species
+  df <- apply(seurat_obj@assays$RNA@data, 1, var)
+  intersect_gene <- intersect(genes_list[[species]], names(df))
+  var_tot <- sum(df)
+  var_sub <- sum(df[intersect_gene])
+  cat(paste0("explained variance ", species, " - all cells: ", var_sub/var_tot, "\n"))
+  df_var["all cells", species] <- var_sub/var_tot
+  
+  for (group in levels(seurat_obj@active.ident)) {
+    temp <- subset(seurat_obj, idents = group)
+    df <- apply(temp@assays$RNA@data, 1, var)
+    intersect_gene <- intersect(genes_list[[species]], names(df))
+    var_tot <- sum(df)
+    var_sub <- sum(df[intersect_gene])
+    cat(paste0("explained variance ", species, " - ", group, " cells: ", var_sub/var_tot, "\n"))
+    df_var[group, species] <- var_sub/var_tot
+    rm(temp)
+  }
+  
+  return(df_var)
+}
+
+genes_list <- list(mouse = unique(intersect(rownames(mm_seurat_object), rownames(seurat_object))),
+									 rat = unique(intersect(rownames(rat_seurat_object), 
+									 											 map_genelist$rat_to_mouse$Gene.name[map_genelist$rat_to_mouse$Mouse.gene.name %in%  rownames(seurat_object)])),
+									 pig = unique(intersect(rownames(pig_seurat_object), 
+									 											 map_genelist$pig_to_mouse$Gene.name[map_genelist$pig_to_mouse$Mouse.gene.name %in%  rownames(seurat_object)])),
+									 monkey = unique(intersect(rownames(mk_sc_seurat_object),
+									 											 map_genelist$monkey_to_mouse$Gene.name[map_genelist$monkey_to_mouse$Mouse.gene.name %in%  rownames(seurat_object)])),
+									 human = unique(intersect(rownames(hn_seurat_object), 
+									 											 map_genelist$human_to_mouse$Gene.name[map_genelist$human_to_mouse$Mouse.gene.name %in%  rownames(seurat_object)])))
+
+length(genes_list$mouse)
+length(genes_list$rat)
+length(genes_list$pig)
+length(genes_list$monkey)
+length(genes_list$human)
+
+mouse_df <- calc_var_ratio(seurat_obj = mm_seurat_object, species = "mouse", genes_list = genes_list)
+rat_df <-  calc_var_ratio(seurat_obj = rat_seurat_object, species = "rat", genes_list = genes_list)
+pig_df <- calc_var_ratio(seurat_obj = pig_seurat_object, species = "pig", genes_list = genes_list)
+monkey_df <- calc_var_ratio(seurat_obj = mk_sc_seurat_object, species = "monkey", genes_list = genes_list)
+human_df <- calc_var_ratio(seurat_obj = hn_seurat_object, species = "human", genes_list = genes_list)
+
+explain_variance <- list(mouse_df = mouse_df, rat_df = rat_df, pig_df = pig_df, monkey_df = monkey_df, human_df = human_df)
+
+write.xlsx(explain_variance, "20231012_pancreas_exlained_variance.xlsx")
+
+```
+
+#### 4. 每个物种跑每个celltype的marker 去除celltype marker 中的核糖体 线粒体相关基因 并计算物种之间的spearman相关性 
+```{r}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering")
+
+seurat_object <- readRDS("20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+
+names(species_objects) <- species_names
+
+species_markers <- lapply(species_objects, function(species_obj) {
+  FindAllMarkers(object = species_obj, 
+                 only.pos = TRUE, 
+                 min.pct = 0.1, 
+                 logfc.threshold = 0.25,
+                 test.use = "wilcox")
+})
+
+names(species_markers) <- species_names
+
+write.xlsx(species_markers, "20231011_each_species_marker_min_pct_0.1_logfc_0.25.xlsx")
+saveRDS(species_markers, "20231011_each_species_marker_min_pct_0.1_logfc_0.25.rds")
+
+species_markers <- readRDS("20231011_each_species_marker_min_pct_0.1_logfc_0.25.rds")
+
+## 去除核糖体和线粒体基因 再去做相关分析
+for (species in species_names) {
+  species_markers[[species]] <- species_markers[[species]][-grep("^mt-|^Rpl|^Rps", species_markers[[species]]$gene), ]
+}
+
+#### 物种两者两者之间做相关性
+AvgExpSpecies <- function(species1_name, species2_name, species1_object, species2_object, species1_marker, species2_marker) {
+  
+  intersect_markers <- intersect(species1_marker$gene, species2_marker$gene)
+  
+  species1_avgexp <- AverageExpression(species1_object, group.by = "ident", features = intersect_markers, assays = "RNA")
+  species2_avgexp <- AverageExpression(species2_object, group.by = "ident", features = intersect_markers, assays = "RNA")
+  
+  Sp1 = as.data.frame(species1_avgexp$RNA[rowSums(as.matrix(species1_avgexp$RNA)) != 0, ])
+  colnames(Sp1) <- paste0(species1_name, "_", colnames(Sp1))
+  
+  Sp2 = as.data.frame(species2_avgexp$RNA[rowSums(as.matrix(species2_avgexp$RNA)) != 0, ])
+  colnames(Sp2) <- paste0(species2_name, "_", colnames(Sp2))
+  
+  nDESp1 = length(species1_marker$gene)
+  nDESp2 = length(species2_marker$gene)
+  
+  avg_list <- list(species1_avgexp = Sp1,
+                   species2_avgexp = Sp2,
+                   nDESp1 = nDESp1,
+                   nDESp2 = nDESp2,
+                   intersect_markers = intersect_markers)
+  
+  return(avg_list)
+}
+
+CorrCompareFunction <- function(Sp1, Sp2, intersect_markers, nDESp1, nDESp2){
+  
+  #Step5: Scale Expression Tables by gene average
+  avg = rowMeans(Sp1)
+  Sp1 = sweep(Sp1,1,avg,"/")
+  rm(avg)
+  
+  avg = rowMeans(Sp2)
+  Sp2 = sweep(Sp2,1,avg,"/")
+  rm(avg)
+  
+  #Step6: Merge Expression Tables
+  geTable = merge(Sp1,Sp2, by='row.names', all=F)
+  rownames(geTable) = geTable$Row.names
+  geTable = geTable[,2:ncol(geTable)]
+  
+  #Step7:  Correlation
+  #7a:  Correlation
+  corr.method <- "spearman"
+  Corr.Coeff.Table = cor(geTable, method=corr.method)
+  
+  #7b:  Shuffle data
+  shuffled.cor.list = list()
+  pb   <- txtProgressBar(1, 100, style=3)
+  nPermutations <- 1000
+  for (i in 1:nPermutations){
+    shuffled = apply(geTable[,1:ncol(Sp1)],1,sample)
+    shuffled2 = apply(geTable[,(ncol(Sp1)+1):ncol(geTable)],1,sample)
+    shuffled = cbind(t(shuffled),t(shuffled2))
+    shuffled.cor = cor(shuffled, method=corr.method)
+    shuffled.cor.list[[i]] = shuffled.cor
+    rm(list=c('shuffled','shuffled2','shuffled.cor'))
+    if ((i %% 100) ==0){
+      setTxtProgressBar(pb, (i*100)/nPermutations)
+    }
+  }
+  
+  p.value.table = matrix(ncol=ncol(geTable), nrow = ncol(geTable))
+  rownames(p.value.table) = colnames(geTable)
+  colnames(p.value.table) = colnames(geTable)
+  
+  shuffled.mean.table = matrix(ncol=ncol(geTable), nrow = ncol(geTable))
+  rownames(shuffled.mean.table) = colnames(geTable)
+  colnames(shuffled.mean.table) = colnames(geTable)
+  
+  a = combn(1:ncol(geTable),2)
+  for (i in 1:ncol(a)){
+    cor.scores = sapply(shuffled.cor.list,"[",a[1,i],a[2,i])
+    shuffled.mean.table[a[1,i],a[2,i]] = mean(cor.scores)
+    shuffled.mean.table[a[2,i],a[1,i]] = mean(cor.scores)
+    p.value = mean(abs(cor.scores)>=abs(Corr.Coeff.Table[a[1,i],a[2,i]]))
+    p.value.table[a[1,i],a[2,i]] = p.value
+    p.value.table[a[2,i],a[1,i]] = p.value
+    rm(list=c('cor.scores','p.value'))
+    setTxtProgressBar(pb, (i*100)/ncol(a))
+  }
+  
+  p.value.table[p.value.table==0] <- 0.000001
+  neg.log10.p = -log10(p.value.table)
+  
+  #step8 "Overlap in Markers"
+  #for all pairs of cell-types generate list of genes that are at least 1.5x avg in both cells
+  
+  #from above a = combn(1:ncol(geTable),2)
+  marker.overlap.list = list()
+  for (i in 1:ncol(a)){
+    datasubset = cbind(geTable[,a[1,i]],geTable[,a[2,i]])
+    markers = rownames(geTable[datasubset[,1]>1 & datasubset[,2]>1,])
+    marker.overlap.list[[i]] = markers
+    names(marker.overlap.list)[i] = paste(colnames(geTable)[a[1,i]], colnames(geTable)[a[2,i]],sep='_')
+    rm(list=c('datasubset','markers'))
+  }
+  
+  
+  allgene.list.to.return = list(Corr.Coeff.Table,shuffled.mean.table,
+                                p.value.table,neg.log10.p,
+                                intersect_markers,
+                                rownames(geTable),
+                                length(intersect_markers),
+                                length(rownames(geTable)),nDESp1, nDESp2, geTable,marker.overlap.list)
+  names(allgene.list.to.return) = c('corr.coeff','shuffled_correlation_score_means',
+                                    'p.value', 
+                                    'negative_log10_p.value',
+                                    'DEgenes_intersect',
+                                    'DEgenes_in_analysis',
+                                    'nDEgenes_intersect',
+                                    'nDEgenes_in_analysis',
+                                    'nDEgenes_Sp1','nDEgenes_Sp2',
+                                    'scaled_table','overlapping_markers')
+  return(allgene.list.to.return)
+}
+
+result_list = list()
+
+for(i in 1:(length(species_names) - 1)) {
+  for(j in (i+1):length(species_names)) {
+  	
+    print(species_names[i])
+  	print(species_names[j])
+  	
+    species1_name = species_names[i]
+    species2_name = species_names[j]
+    
+    species1_obj = species_objects[[species1_name]]
+    species2_obj = species_objects[[species2_name]]
+    
+    species1_markers = species_markers[[species1_name]]
+    species2_markers = species_markers[[species2_name]]
+    
+    avg_res = AvgExpSpecies(species1_name, species2_name, species1_obj, species2_obj, species1_markers, species2_markers)
+    
+    Sp1 = avg_res$species1_avgexp
+    Sp2 = avg_res$species2_avgexp
+    intersect_markers = avg_res$intersect_markers
+    nDESp1 = avg_res$nDESp1
+    nDESp2 = avg_res$nDESp2
+    
+    corr_res = CorrCompareFunction(Sp1, Sp2, intersect_markers, nDESp1, nDESp2)
+    
+    pair_name = paste(species1_name, species2_name, sep="_")
+    result_list[[pair_name]] = list(avg_res = avg_res, corr_res = corr_res)
+    
+  }
+}
+saveRDS(result_list, "20231012_species_correlation_result_list_rm_mt_rp_gene.rds")
+
+result_list <- readRDS("20231012_species_correlation_result_list_rm_mt_rp_gene.rds")
+# 获取物种的组合
+species_pairs <- names(result_list)
+
+# 先获取所有的细胞类别
+all_cell_types <- c("mouse_alpha", "mouse_beta", "mouse_delta", "mouse_PP", 
+                    "rat_alpha", "rat_beta", "rat_delta", "rat_PP", 
+                    "pig_alpha", "pig_beta", "pig_delta", "pig_PP", 
+                    "monkey_alpha", "monkey_beta", "monkey_delta", "monkey_PP", 
+                    "human_alpha", "human_beta", "human_delta", "human_PP", "human_epsilon")
+
+# 初始化大的相关性和p值矩阵
+all_correlations <- matrix(1, length(all_cell_types), length(all_cell_types), dimnames=list(all_cell_types, all_cell_types))
+all_pvalues <- matrix(0, length(all_cell_types), length(all_cell_types), dimnames=list(all_cell_types, all_cell_types))
+
+# 填充矩阵
+# 使用 apply 函数沿着矩阵的列迭代
+
+for (i in 1:ncol(all_correlations)) {
+    for (j in 1:nrow(all_correlations)) {
+        if (i < j) {
+            cell_type_1 <- all_cell_types[i]
+            cell_type_2 <- all_cell_types[j]
+            
+            possible_correlations <- sapply(names(result_list), function(pair_name) {
+                if (cell_type_1 %in% rownames(result_list[[pair_name]]$corr_res$corr.coeff) &&
+                    cell_type_2 %in% colnames(result_list[[pair_name]]$corr_res$corr.coeff)) {
+                    return(result_list[[pair_name]]$corr_res$corr.coeff[cell_type_1, cell_type_2])
+                } else {
+                    return(NA)
+                }
+            }, simplify = "vector")
+            
+            possible_correlations <- possible_correlations[!is.na(possible_correlations)]
+            
+            # 对可能的相关性按其绝对值进行排序
+            sorted_correlations <- possible_correlations[order(-abs(possible_correlations))]
+            
+            # 获取绝对值最大的原始相关性
+            max_corr <- sorted_correlations[1]
+            pair_name_with_max_corr <- names(sorted_correlations)[1]
+            
+            pvalue <- result_list[[pair_name_with_max_corr]]$corr_res$p.value[cell_type_1, cell_type_2]
+            
+            all_correlations[i, j] <- max_corr
+            all_pvalues[i, j] <- pvalue
+            all_correlations[j, i] <- max_corr
+            all_pvalues[j, i] <- pvalue
+        }
+    }
+}
+
+# 过滤矩阵以获取 p < 0.05 的条目
+significant_correlations <- all_correlations
+significant_correlations[all_pvalues >= 0.05] <- 0
+
+final_corr_res <- list( all_correlations = all_correlations, all_pvalues = all_pvalues, significant_correlations = significant_correlations)
+write.xlsx(final_corr_res, "20231012_final_table_pancrea_fivespecies_spearman_correlation_p_0.05_using_celltypemarker_minpct_0.1_fc_0.25_rm_mt_rp_gene.xlsx")
+
+# 计算距离和进行列聚类
+dist_matrix <- dist(t(significant_correlations))
+clustered_cols <- hclust(dist_matrix, method = "ward.D2")
+
+# 获取聚类后的列的顺序
+column_order <- order.dendrogram(as.dendrogram(clustered_cols))
+
+# 使用这个顺序来重新排列数据的行
+ordered_data <- significant_correlations[column_order, ]
+
+# 使用strsplit对行名进行分割，并提取每个分割后的向量的第二个元素
+cell_types <- sapply(strsplit(rownames(ordered_data), "_"), `[`, 2)
+
+# 创建细胞标注数据
+row_annotation <- data.frame(cell_type = factor(cell_types, levels = c("alpha", "beta", "delta", "PP", "epsilon")))
+rownames(row_annotation) <- rownames(ordered_data)
+
+annotation_colors <- list(cell_type = c(alpha = "#EE766F",beta = "#7DAF2A", delta = "#2EB7BE", PP = "#A080B9", epsilon = "#3BB07A" ))
+
+colnames(ordered_data) <- c("Ms", "R", "P", "Mk", "H","Mk", "H", "P", "Ms", "R", "Mk", "H", "H", "P", "Ms", "R", "Ms", "R", "P", "Mk", "H")
+
+rownames(row_annotation) <- rownames(ordered_data)
+# 使用pheatmap绘制热图
+pdf("20231012_pancrea_fivespecies_spearman_pairwise_correlation_p_value_0.05.pdf", height = 12, width = 12)
+pheatmap::pheatmap(ordered_data, 
+                  cluster_rows = FALSE, 
+                  clustering_method = "ward.D2",
+                  #breaks = color_breaks,
+                  annotation_row = row_annotation,
+                  annotation_colors = annotation_colors)
+
+dev.off()
+
+
+```
+
+
+#### 5. 物种间细胞之间交集的基因的整理以及其功能富集分析
+```{r}
+rm(list = ls())
+library(Seurat)
+library(scScape)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering")
+
+result_list <- readRDS("20231012_species_correlation_result_list_rm_mt_rp_gene.rds")
+
+# 细胞类型
+cell_types <- c("alpha", "beta", "delta", "PP")
+
+# 物种组合列表名字
+combinations <- names(result_list)
+
+# 初始化一个列表来存储每种细胞类型的矩阵
+matrices_list <- list()
+
+# 对于每种细胞类型，构建矩阵
+for (cell in cell_types) {
+    
+    # 创建一个暂时的列表来收集所有基因
+    all_genes_list <- list()
+    
+    for (combo in combinations) {
+        species_1 <- unlist(strsplit(combo, "_"))[1]
+        species_2 <- unlist(strsplit(combo, "_"))[2]
+        
+        key <- paste(species_1, cell, species_2, cell, sep = "_")
+        
+        # 提取交集基因
+        genes <- result_list[[combo]]$corr_res$overlapping_markers[[key]]
+        
+        # 更新暂时的基因列表
+        all_genes_list[[combo]] <- genes
+    }
+    
+    # 得到所有基因的并集
+    all_genes <- unique(unlist(all_genes_list))
+    
+    # 初始化矩阵
+    mat <- matrix(0, nrow = length(all_genes), ncol = length(combinations), 
+                  dimnames = list(all_genes, combinations))
+    
+    # 填充矩阵
+    for (i in 1:length(all_genes)) {
+        for (j in 1:length(combinations)) {
+            if (all_genes[i] %in% all_genes_list[[combinations[j]]]) {
+                mat[i, j] <- 1
+            }
+        }
+    }
+    
+    # 保存到主列表中
+    matrices_list[[cell]] <- mat
+}
+
+saveRDS(matrices_list, "20231012_pancreas_species_celltype_union_overlapping_genes.rds")
+write.xlsx(matrices_list, "20231012_pancreas_species_celltype_union_overlapping_genes.xlsx", colNames = T, rowNames = T)
+
+```
+
+
+#### 6. 功能富集分析画热图
+```{r}
+rm(list = ls())
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering")
+
+library(reshape2)
+library(openxlsx)
+plotdata <- read.xlsx("20231016_pancreas_fivespecies_union_celltype_markers_enrichment.xlsx", colNames = T, rowNames = F)
+reshaped_data <- dcast(plotdata, celltype ~ Category, value.var = 'LogP')
+
+library(tidyverse)
+# 使用 pivot_wider 来展开数据
+result <- plotdata %>%
+  pivot_wider(names_from = celltype, values_from = LogP, id_cols = Description)
+
+head(result)
+
+result <- as.data.frame(result)
+result[is.na(result)] <- 0
+rownames(result) <- result$Description
+result$Description <- NULL
+result <- abs(result)
+
+library(pheatmap)
+library(RColorBrewer)
+
+# 定义颜色渐变
+# my_colors <- colorRampPalette(c("lightgray", "moccasin", "tan", "sienna", "brown"))(100)
+
+# 使用pheatmap来绘制热图
+pdf("20231016_pancreas_fivespecies_celltypemarker_enrichment.pdf", height = 12, width = 12)
+pheatmap(result, cluster_cols = F)
+dev.off()
+
+```
+
+
+# 20231020 Figure 2 GPCRome in human, monkey, pig, rat and mouse islets 
+
+## 1. 20231020 GPCR表达的分布情况
+```{r}
+rm(list = ls())
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression")
+
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+DefaultAssay(mm_seurat_object) <- "RNA"
+DefaultAssay(rat_seurat_object) <- "RNA"
+DefaultAssay(pig_seurat_object) <- "RNA"
+DefaultAssay(mk_sc_seurat_object) <- "RNA"
+DefaultAssay(hn_seurat_object) <- "RNA"
+
+species_objects <- list(mouse = mm_seurat_object, rat = rat_seurat_object, pig = pig_seurat_object, 
+												monkey = mk_sc_seurat_object, human = hn_seurat_object)
+
+# 读取GPCR表格
+gpcr_df <- read.xlsx("20231018_GPCRlist_for_pancreas_analysis.xlsx", colNames = T)
+
+# 对每个物种进行统计
+species_columns <- c("Gene.Symbol.(Mouse)", "Gene.Symbol.(Rat)", "Gene.Symbol.(Pig)", "Gene.Symbol.(Crab-eating.monkey)", "Gene.Symbol.(Human)")
+
+gpcrs_list <- list()
+gpcr_famliy_count <- list()
+
+expression_threshold <- 0
+min_cells <- 10
+
+for(species in names(species_objects)) {
+	
+	print(species)
+	obj <- species_objects[[species]]
+  
+	# 1. 提取出GPCR的表达谱并筛选基因
+	column_name <- species_columns[which(names(species_objects) == species)]
+	  
+	intersectname <- intersect(gpcr_df[[column_name]], rownames(obj))
+	
+	expressed_gpcrs <- names(which(rowMeans(obj@assays$RNA@counts[intersectname, ]) > expression_threshold))
+	
+  # 2. 基于表达的细胞数目筛选基因
+  expressed_gpcrs <- names(rowSums(obj@assays$RNA@counts[expressed_gpcrs, ] > expression_threshold) > 10)
+  gpcrs_list[[species]] <- expressed_gpcrs
+  
+
+  gpcr_subset <- gpcr_df[gpcr_df[[column_name]] %in% expressed_gpcrs, ]
+  
+  gpcr_famliy_count[[species]] <- table(gpcr_subset$Class)
+ 
+}
+
+# 可视化结果
+library(ggplot2)
+
+df_for_plot <- data.frame(Species = character(), Family = character(), Count = numeric())
+
+for(species in names(gpcr_famliy_count)) {
+  family_count <- gpcr_famliy_count[[species]]
+  temp_df <- data.frame(Species = species, Family = names(family_count), Count = as.numeric(family_count))
+  df_for_plot <- rbind(df_for_plot, temp_df)
+}
+
+# Calculate the total count for each species
+df_totals <- df_for_plot %>%
+  group_by(Species) %>%
+  summarise(Total = sum(Count))
+
+# Join the total counts back to the original data
+df_for_plot <- df_for_plot %>%
+  left_join(df_totals, by = "Species")
+
+# Calculate the percentage for each row
+df_for_plot$Percentage <- (df_for_plot$Count / df_for_plot$Total) * 100
+# Reorder Family based on percentage values
+df_for_plot <- df_for_plot %>%
+  arrange(Species, -Percentage) %>%
+  group_by(Species) %>%
+  mutate(Family = factor(Family, levels = unique(Family))) %>%
+  ungroup()
+
+library(RColorBrewer)
+
+colors1 <- brewer.pal(8, "Set2")
+colors2 <- brewer.pal(8, "Set1")[2:7]
+colors3 <- brewer.pal(6, "Pastel1")[2:6]
+combined_colors <- c(colors1, colors2, colors3)
+
+df_for_plot$Species <- factor(df_for_plot$Species, levels = c("mouse", "rat", "pig", "monkey", "human"))
+pdf("20231020_pancreas_expression_gpcr_distribution.pdf", width = 12, height = 8)
+ggplot(df_for_plot, aes(x=Species, y=Percentage, fill=Family)) +
+  geom_bar(stat="identity", position="stack") +
+  scale_fill_manual(values=combined_colors) +  # 使用自定义的颜色
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title="Distribution of GPCRs by Family across Species", x="GPCR Class", y="Percentage") + theme_bw()
+dev.off()
+
+
+write.xlsx(df_for_plot, "20231020_gpcr_distribution_df_for_plot.xlsx", colNames = F)
+write.xlsx(gpcrs_list, "20231020_gpcr_distribution_gpcrs_names.xlsx", colNames = F)
+write.xlsx(gpcr_famliy_count, "20231020_gpcr_distribution_gpcr_class_count.xlsx", colNames = F)
+
+## 2. 五个物种公有的GPCR
+
+# 初始化一个列表，存放映射到小鼠的基因名
+mapped_genes_list <- list()
+
+# 遍历每个物种的GPCR列表
+species_columns <- c("Gene.Symbol.(Mouse)", "Gene.Symbol.(Rat)", "Gene.Symbol.(Pig)", 
+                     "Gene.Symbol.(Crab-eating.monkey)", "Gene.Symbol.(Human)")
+
+for (i in 1:5) {
+	  print(i)
+    species_column <- species_columns[i]
+    # 使用 %in% 来过滤出映射到小鼠的基因名
+    mapped_genes <- gpcr_df$`Gene.Symbol.(Mouse)`[gpcr_df[, species_column] %in% gpcrs_list[[i]]]
+    mapped_genes_list[[i]] <- setdiff(unique(mapped_genes), "Absent")
+}
+
+names(mapped_genes_list) <- names(gpcrs_list)
+common_genes <- Reduce(intersect, mapped_genes_list)
+
+# 使用UpSetR绘图，只显示基因数目大于2的交集
+pdf("20231020_pancreas_gpcr_intersect_upsetR.pdf", width = 12, height = 8)
+upset(fromList(mapped_genes_list), sets = c("mouse", "rat", "pig", "monkey", "human"), order.by = "degree", keep.order = T)
+dev.off()
+
+# 获取二进制矩阵
+binary_matrix <- fromList(mapped_genes_list)
+
+# 为了方便后续处理，把基因名赋予行名
+rownames(binary_matrix) <- unique(unlist(mapped_genes_list))
+
+# 创建一个列表来存储每个交集的基因
+intersection_genes <- list()
+
+# 提取每个交集的基因
+for(i in 1:nrow(binary_matrix)) {
+  # 找到那些值为1的列，表示此基因属于那个物种
+  species_involved <- colnames(binary_matrix)[binary_matrix[i, ] == 1]
+  
+  # 生成一个交集集合的名字，例如"mouse_rat"
+  intersection_name <- paste(sort(species_involved), collapse="_")
+  
+  # 将基因添加到相应的交集集合中
+  if(!exists(intersection_name, intersection_genes)) {
+    intersection_genes[[intersection_name]] <- c()
+  }
+  intersection_genes[[intersection_name]] <- c(intersection_genes[[intersection_name]], rownames(binary_matrix)[i])
+}
+
+# 打印出每个交集集合的基因
+intersection_genes
+
+intersection_matrix <- t(sapply(intersection_genes, function(x) {
+  c(x, rep(NA, max(lengths(intersection_genes)) - length(x)))
+}))
+
+intersection_matrix <- t(intersection_matrix)
+write.csv(intersection_matrix, "20231020_pancreas_gpcr_intersect_results.csv")
+saveRDS(intersection_genes, "20231020_pancreas_gpcr_intersect_results.rds")
+
+```
+
+## 2. 20231020 就至少在三个物种里面交集的基因在五个物种里面每个细胞top 10 gpcr 小提琴图
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression")
+
+gpcr_intersection_genes <- readRDS("20231020_pancreas_gpcr_intersect_results.rds")
+
+# 读取GPCR表格
+gpcr_df <- read.xlsx("20231018_GPCRlist_for_pancreas_analysis.xlsx", colNames = T)
+
+# 获取那些集合名含有至少3种动物的集合名
+sets_with_three_or_more_species <- names(gpcr_intersection_genes)[sapply(strsplit(names(gpcr_intersection_genes), "_"), length) >= 3]
+
+# 提取在上述集合中的基因
+genes_in_sets_with_three_or_more_species <- gpcr_intersection_genes[sets_with_three_or_more_species]
+
+# 打印集合名和其中的基因数量
+sets_name <- names(sapply(genes_in_sets_with_three_or_more_species, length))
+gpcr_in_three_or_more_species <- unique(unlist(gpcr_intersection_genes[sets_name]))
+
+# 初始化一个列表来保存每个物种的筛选结果
+gpcr_df_used <- gpcr_df[gpcr_df$`Gene.Symbol.(Mouse)` %in% gpcr_in_three_or_more_species, ]
+
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering/20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+
+names(species_objects) <- species_names
+
+for(i in species_names){
+	species_objects[[i]] <- subset(species_objects[[i]], features = gpcr_df_used$`Gene.Symbol.(Mouse)`)
+}
+
+celltype_gpcr_res <- list()
+
+for(i in species_names){
+	print(i)
+	file_prefix <- paste0(i, "_gpcr_")
+	temp_gpcr <- scScape::FindmarkerForCluster(species_objects[[i]], file.prefix = file_prefix, test.use = "wilcox", 
+																						 min.pct = 0.01, 
+                              logfc.threshold = 0, p.val.adj = 0.2, mt.rb.pattern = "^Rpl|Rps")
+	celltype_gpcr_res[[i]] <- temp_gpcr
+}
+ 
+names(celltype_gpcr_res) <- species_names
+
+saveRDS(celltype_gpcr_res, "20231021_pancreas_celltype_gpcr_res.rds")
+
+plot_dot <- function(seurat_object, plot_features){
+	DefaultAssay(seurat_object) <- "RNA"
+	p_dotplot <- DotPlot(seurat_object, features = plot_features, col.min = 0, col.max = 1, scale = T, dot.min = 0.01)
+	p_dotplot <- p_dotplot + coord_flip()
+	p_dotplot <- p_dotplot + scale_colour_gradient2(low = "#FDE4D9", mid = "#ED6C4A", high = "#4A0E13",
+                                                midpoint = 0.5, breaks = c( 0, 0.5, 1), label = c(0, 0.5, 1))
+	p_dotplot <- p_dotplot + theme(axis.text.x = element_text(size = 10, vjust = 0.5, hjust = 0.5, angle = 45))
+	p_dotplot <- p_dotplot + theme(axis.line = element_blank())  # 移除原始的坐标轴线条
+	p_dotplot <- p_dotplot + theme(panel.border = element_rect(color = "black", fill = NA, size = 1))  # 添加方形边框
+	p_dotplot <- p_dotplot + xlab(NULL) + ylab(NULL) # 不显示坐标轴轴名称
+	return(p_dotplot)
+}
+
+
+top_gpcr_res <- list()
+plots <- list()
+for (species in names(species_objects)) {
+	print(species)
+  # 获取前10个表达的GPCR基因
+  top_genes <- celltype_gpcr_res[[species]] %>% 
+                 group_by(cluster) %>% 
+                 top_n(n = 10, wt = avg_log2FC)
+  top_gpcr_res[[species]] <- top_genes
+  
+  # 使用DotPlot进行可视化
+  pp <- plot_dot(seurat_object = species_objects[[species]], plot_features = unique(top_genes$gene)) 
+  pp <- pp +  scale_size_continuous(breaks = c(5, 25, 50, 75, 100), limits = c(0.01, 100))
+  plots[[species]] <- pp
+}
+
+plots <- plot_grid(plotlist = plots, ncol = 5)
+pdf("20231021_islets_figure2c_celltypetop10_gpcr.pdf", width = 22, height = 8)
+plots
+dev.off()
+
+
+top_sorted_list <- top_gpcr_res %>%
+  map(~ .x %>% 
+        group_by(cluster) %>% 
+        arrange(desc(avg_log2FC)) %>% 
+        mutate(rank = row_number()))
+write.xlsx(top_sorted_list, "20231021_islets_celltype_top10_gpcr.xlsx")
+
+# 构建top10 cell type gpcr 结果矩阵
+clusters <- c("alpha", "beta", "delta", "PP")
+library(dplyr)
+library(tidyr)
+library(purrr)
+
+# 首先，为每个tibble添加一个物种列
+named_sorted_list <- map2(top_sorted_list, names(top_sorted_list), function(data, species_name) {
+  data %>%
+    mutate(species = species_name)
+})
+
+# 现在，将所有数据绑定到一个大的tibble中
+all_data <- bind_rows(named_sorted_list)
+
+# 结果为一个列表，其中每个元素是一个矩阵，对应于每个细胞类型
+
+result_list <- map(clusters, function(cluster_name){
+  data_for_cluster <- all_data %>%
+    filter(cluster == cluster_name) %>%
+    group_by(gene, species) %>%
+    summarize(rank = mean(rank, na.rm = TRUE)) %>%
+    pivot_wider(names_from = species, values_from = rank, values_fill = list(rank = 0))
+  
+  return(data_for_cluster)
+})
+
+# 检查结果
+names(result_list) <- clusters
+View(result_list[[1]]) # 查看alpha细胞类型的结果
+write.xlsx(result_list, "20231021_islets_celltype_top10_gpcr_summary_rank.xlsx", colNames = T)
+
+
+#### 20231025 统计结果，就是每个细胞类型中每个基因表达的物种个数，单个物种表达的话只列出top2
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression")
+
+celltype_gpcr_res <- readRDS("20231021_pancreas_celltype_gpcr_res.rds")
+### 构建全部cell type gpcr 的结果矩阵
+
+## 添加一个rank列
+sorted_list <- celltype_gpcr_res %>%
+  map(~ .x %>% 
+        group_by(cluster) %>% 
+        arrange(desc(avg_log2FC)) %>% 
+        mutate(rank = row_number()))
+
+
+clusters <- c("alpha", "beta", "delta", "PP")
+library(dplyr)
+library(tidyr)
+library(purrr)
+
+# 首先，为每个tibble添加一个物种列
+named_sorted_list <- map2(sorted_list, names(sorted_list), function(data, species_name) {
+  data %>%
+    mutate(species = species_name)
+})
+
+# 现在，将所有数据绑定到一个大的tibble中
+all_data <- bind_rows(named_sorted_list)
+
+# 结果为一个列表，其中每个元素是一个矩阵，对应于每个细胞类型
+result_list <- map(clusters, function(cluster_name){
+  data_for_cluster <- all_data %>%
+    filter(cluster == cluster_name) %>%
+    group_by(gene, species) %>%
+    summarize(rank = mean(rank, na.rm = TRUE)) %>%
+    pivot_wider(names_from = species, values_from = rank, values_fill = list(rank = 0))
+  
+  return(data_for_cluster)
+})
+
+# 检查结果
+names(result_list) <- clusters
+View(result_list[[1]]) # 查看alpha细胞类型的结果
+write.xlsx(result_list, "20231025_islets_celltype_all_gpcr_summary_rank.xlsx", colNames = T)
+
+
+library(dplyr)
+library(purrr)
+library(rlang)
+
+add_species_indicators <- function(data) {
+  species_cols <- setdiff(names(data), "gene")
+  for (species in species_cols) {
+    data[[paste0(species, "_ind")]] <- ifelse(data[[species]] > 0, 1, 0)
+  }
+  return(data)
+}
+
+count_expressed_species <- function(data) {
+  indicator_cols <- grep("_ind$", names(data), value = TRUE)
+  data$total_species <- rowSums(data[indicator_cols], na.rm = TRUE)
+  return(data)
+}
+
+process_cell_type_data <- function(data) {
+	
+	# Helper function to get expressing species
+	get_expressing_species <- function(row) {
+		species_cols <- setdiff(names(row), c("total_species", grep("_ind$", names(row), value=TRUE), "gene"))
+		expressing_species <- names(row[species_cols])[row[species_cols] > 0]
+		return(paste(expressing_species, collapse = ", "))
+	}
+	
+	# Helper function to get the rank of the gene in the expressed species
+	get_rank_in_expressed_species <- function(row) {
+		species_cols <- strsplit(as.character(row$species_expressed), ", ")[[1]]
+		ranks <- sapply(species_cols, function(spec) row[[spec]])
+		return(paste(ranks, collapse = ", "))
+	}
+	
+	# For genes expressed in 3 or more species
+	three_or_more_species <- data %>%
+		filter(total_species >= 3) %>%
+		rowwise() %>%
+		mutate(species_expressed = get_expressing_species(across(where(is.numeric)))) %>%
+		mutate(species_count = "3_or_more_species")
+	
+	# For genes expressed in 2 species
+	two_species <- data %>%
+		filter(total_species == 2) %>%
+		rowwise() %>%
+		mutate(species_expressed = get_expressing_species(across(where(is.numeric)))) %>%
+		mutate(species_count = "2_species")
+	
+	# For the top 2 genes expressed in a single species
+	species_cols <- setdiff(names(data), c("gene", "total_species", grep("_ind$", names(data), value=TRUE), "species_expressed", "species_count"))
+	top_genes_list <- list()
+	
+	for (species in species_cols) {
+		top_genes_for_species <- data %>%
+			filter(total_species == 1) %>%
+			filter(!!sym(species) > 0) %>%
+			arrange(!!sym(species)) %>%
+			slice_head(n = 2)
+		
+		top_genes_for_species$species_expressed <- species
+		top_genes_for_species$species_count <- "1_species"
+		top_genes_list[[species]] <- top_genes_for_species
+	}
+	
+	single_species_top2 <- do.call(rbind, top_genes_list)
+	
+	# Combine everything
+	result_df <- bind_rows(three_or_more_species, two_species, single_species_top2)
+	
+	# Add the rank column
+	result_df <- result_df %>%
+		rowwise() %>%
+		mutate(gene_rank_in_expressed_species = get_rank_in_expressed_species(cur_data()))
+	
+	return(result_df)
+}
+
+# 应用函数
+counted_data <- lapply(result_list, add_species_indicators)
+counted_data <- lapply(counted_data, count_expressed_species)
+final_results <- lapply(counted_data, process_cell_type_data)
+
+# 检查 alpha 细胞类型的结果
+head(final_results$alpha)
+
+write.xlsx(final_results, "20231025_islets_celltype_all_gpcr_count_expressed_species.xlsx", colNames = T)
+
+```
+
+## 3. 20231020 plot celltype top10 gpcrs
+```{r}
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression")
+
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering/20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+
+names(species_objects) <- species_names
+
+p1 <- VlnPlot(species_objects$mouse, features = "Glp1r")
+p2 <- VlnPlot(species_objects$rat, features = "Glp1r")
+p3 <- VlnPlot(species_objects$pig, features = "Glp1r")
+p4 <- VlnPlot(species_objects$monkey, features = "Glp1r")
+p5 <- VlnPlot(species_objects$human, features = "Glp1r")
+
+plots <- plot_grid(p1, p2, p3, p4, p5, ncol = 5)
+
+pdf("20231022_islets_glp1r_expression.pdf", width = 20, height = 5)
+plots
+dev.off()
+
+```
+
+## 4. 20231026 筛选GPCR的策略换成细胞表达的数目, 比例，基因表达均值，以及总值，先总结出这么一个表格
+```{r}
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis")
+
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering/20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+
+names(species_objects) <- species_names
+
+rm(seurat_object)
+
+# 读取GPCR表格
+gpcr_df <- read.xlsx("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/GPCR分布图/20231018_GPCRlist_for_pancreas_analysis.xlsx", colNames = T)
+
+
+# 函数
+calcGeneStatsVectorized <- function(seurat_obj, gene_names) {
+	gene_data <- seurat_obj@assays$RNA@data[gene_names, ]
+	
+	total_cells <- rowSums(gene_data > 0)
+	cell_ratios <- total_cells / ncol(gene_data)
+	total_expressions <- rowSums(gene_data)
+	avg_expressions <- total_expressions / total_cells
+	
+	# 计算在表达的细胞中的中位数
+	median_expressions <- apply(gene_data, 1, function(x) median(x[x > 0]))
+	
+	result <- data.frame(
+		Gene = gene_names,
+		TotalCells = total_cells,
+		CellRatio = cell_ratios,
+		TotalExpression = total_expressions,
+		AvgExpression = avg_expressions, 
+		MedianExpression = median_expressions
+	)
+	
+	return(result)
+}
+
+# 列名前缀
+species_list <- c("mouse", "rat", "pig", "monkey", "human")
+metrics <- c("TotalCells", "CellRatio", "TotalExpression", "AvgExpression", "MedianExpression")
+colnames_list <- c("Gene", sapply(species_list, function(species) {
+	paste0(metrics, "_", species)
+}) %>% unlist())
+
+# 我们只需要为每个物种一次计算 gpcr_genes
+species_to_genes <- lapply(species_list, function(species) {
+	intersect(gpcr_df$`Gene.Symbol.(Mouse)`, rownames(species_objects[[species]]))
+})
+
+names(species_to_genes) <- species_list
+
+# 计算所有物种中出现的基因
+all_species_gpcrs <- Reduce(union, lapply(species_objects, function(obj) rownames(obj)))
+all_species_gpcrs <- intersect(all_species_gpcrs, gpcr_df$`Gene.Symbol.(Mouse)`)
+
+# 初始化cell_type对应的数据框
+final_res <- list()
+for (cell_type in cell_types) {
+	final_res[[cell_type]] <- data.frame(
+		matrix(0, ncol = length(colnames_list), nrow = length(all_species_gpcrs))
+	)
+	names(final_res[[cell_type]]) <- colnames_list
+	final_res[[cell_type]]$Gene <- all_species_gpcrs
+}
+
+
+# 迭代每个物种和cell_type，计算统计数据，并更新相应的矩阵
+for (species in species_list) {
+	gpcr_genes <- species_to_genes[[species]]
+	print(species)
+	for (cell_type in cell_types) {
+		print(cell_type)
+		subset_obj <- species_objects[[species]][, species_objects[[species]]@active.ident == cell_type]
+		
+		temp_res <- calcGeneStatsVectorized(subset_obj, gpcr_genes)
+		
+		# 更新相应的cell_type矩阵
+		idx <- match(temp_res$Gene, final_res[[cell_type]]$Gene)
+		final_res[[cell_type]][idx, paste0("TotalCells_", species)] <- temp_res$TotalCells
+		final_res[[cell_type]][idx, paste0("CellRatio_", species)] <- temp_res$CellRatio
+		final_res[[cell_type]][idx, paste0("TotalExpression_", species)] <- temp_res$TotalExpression
+		final_res[[cell_type]][idx, paste0("AvgExpression_", species)] <- temp_res$AvgExpression
+		final_res[[cell_type]][idx, paste0("MedianExpression_", species)] <- temp_res$MedianExpression
+	}
+}
+write.xlsx(final_res, "20231026_islets_gpcr_expression_result.xlsx")
+
+
+## 计算 Gcg, Ins2, Sst, Ppy 的表达水平
+
+calcGeneStatsVectorized_unique <- function(seurat_obj, gene_names) {
+  gene_data <- seurat_obj@assays$RNA@data[gene_names, ]
+  
+  total_cells <- rowSums(gene_data > 0)
+  cell_ratios <- total_cells / ncol(gene_data)
+  total_expressions <- rowSums(gene_data)
+  avg_expressions <- total_expressions / total_cells
+  
+  # 计算在表达的细胞中的中位数
+  median_expressions <- apply(gene_data, 1, function(x) median(x[x > 0]))
+  
+  # 计算1/4分位数和3/4分位数
+  q1_expressions <- apply(gene_data, 1, function(x) quantile(x[x > 0], probs = 0.25))
+  q3_expressions <- apply(gene_data, 1, function(x) quantile(x[x > 0], probs = 0.75))
+  
+  result <- data.frame(
+    Gene = gene_names,
+    TotalCells = total_cells,
+    CellRatio = cell_ratios,
+    TotalExpression = total_expressions,
+    AvgExpression = avg_expressions, 
+    MedianExpression = median_expressions,
+    Q1Expression = q1_expressions,
+    Q3Expression = q3_expressions
+  )
+  
+  return(result)
+}
+
+# 列名前缀
+species_list <- c("mouse", "rat", "pig", "monkey", "human")
+metrics <- c("TotalCells", "CellRatio", "TotalExpression", "AvgExpression", "MedianExpression", "Q1Expression", "Q3Expression")
+colnames_list <- c("Gene", sapply(species_list, function(species) {
+	paste0(metrics, "_", species)
+}) %>% unlist())
+
+# 我们只需要为每个物种一次计算基因名字
+species_to_genes <- lapply(species_list, function(species) {
+	intersect(c( "Gcg", "Ins2", "Sst", "Ppy"), rownames(species_objects[[species]]))
+})
+
+names(species_to_genes) <- species_list
+
+# 计算所有物种中出现的基因
+all_species_uniquegenes <- Reduce(union, lapply(species_objects, function(obj) rownames(obj)))
+all_species_uniquegenes <- intersect(all_species_uniquegenes, c("Gcg", "Ins2",  "Sst", "Ppy"))
+
+# 初始化cell_type对应的数据框
+final_res_uniquegenes <- list()
+for (cell_type in cell_types) {
+	final_res_uniquegenes[[cell_type]] <- data.frame(
+		matrix(0, ncol = length(colnames_list), nrow = length(all_species_uniquegenes))
+	)
+	names(final_res_uniquegenes[[cell_type]]) <- colnames_list
+	final_res_uniquegenes[[cell_type]]$Gene <- all_species_uniquegenes
+}
+
+
+# 迭代每个物种和cell_type，计算统计数据，并更新相应的矩阵
+for (species in species_list) {
+	gpcr_genes <- species_to_genes[[species]]
+	print(species)
+	for (cell_type in cell_types) {
+		print(cell_type)
+		subset_obj <- species_objects[[species]][, species_objects[[species]]@active.ident == cell_type]
+		
+		temp_res <- calcGeneStatsVectorized_unique(subset_obj, gpcr_genes)
+		
+		# 更新相应的cell_type矩阵
+		idx <- match(temp_res$Gene, final_res_uniquegenes[[cell_type]]$Gene)
+		final_res_uniquegenes[[cell_type]][idx, paste0("TotalCells_", species)] <- temp_res$TotalCells
+		final_res_uniquegenes[[cell_type]][idx, paste0("CellRatio_", species)] <- temp_res$CellRatio
+		final_res_uniquegenes[[cell_type]][idx, paste0("TotalExpression_", species)] <- temp_res$TotalExpression
+		final_res_uniquegenes[[cell_type]][idx, paste0("AvgExpression_", species)] <- temp_res$AvgExpression
+		final_res_uniquegenes[[cell_type]][idx, paste0("MedianExpression_", species)] <- temp_res$MedianExpression
+		final_res_uniquegenes[[cell_type]][idx, paste0("Q1Expression_", species)] <- temp_res$Q1Expression
+		final_res_uniquegenes[[cell_type]][idx, paste0("Q3Expression_", species)] <- temp_res$Q3Expression
+	}
+}
+
+saveRDS(final_res_uniquegenes, "20231026_islets_gcg_ins2_sst_ppy_expression_result.rds")
+```
+
+## 5. 20231026 基于上面的表格筛选出物种之间保守的gpcr
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis")
+
+# 首先，确保你已经加载了必要的库
+library(dplyr)
+
+# 读取数据
+final_res <- list()
+for (i in getSheetNames("20231026_islets_gpcr_expression_result.xlsx")){
+	final_res[[i]] <- read.xlsx("20231026_islets_gpcr_expression_result.xlsx", sheet = i)
+}
+
+# 定义筛选函数
+filter_genes <- function(df, species_list, thresholds) {
+	# 1. 使用TotalCells筛选基因
+	df_filtered <- df %>%
+		rowwise() %>%
+		filter(
+			sum(c_across(starts_with("TotalCells_")) > 3) >= 2
+		)
+	
+	# 初始化一个矩阵
+	criteria <- c("Q1_CellRatio", "Q3_CellRatio", "IQR_CellRatio", "CV_TotalExpression", 
+								"CV_AvgExpression", "Q1_MedianExpression", "Q3_MedianExpression", "IQR_MedianExpression")
+	
+	results_matrix <- matrix(0, nrow=nrow(df_filtered), ncol=length(criteria), 
+													 dimnames=list(df_filtered$Gene, criteria))
+	
+	for (gene_idx in 1:nrow(df_filtered)) {
+		# CellRatio
+		Q1_CellRatio <- quantile(as.numeric(df_filtered[gene_idx, paste0("CellRatio_", species_list)]), 0.25, na.rm = TRUE)
+		Q3_CellRatio <- quantile(as.numeric(df_filtered[gene_idx, paste0("CellRatio_", species_list)]), 0.75, na.rm = TRUE)
+		IQR_CellRatio <- Q3_CellRatio - Q1_CellRatio
+		
+		# TotalExpression和AvgExpression
+		CV_TotalExpression <- sd(as.numeric(df_filtered[gene_idx, paste0("TotalExpression_", species_list)]), na.rm = TRUE) / 
+			mean(as.numeric(df_filtered[gene_idx, paste0("TotalExpression_", species_list)]), na.rm = TRUE)
+		CV_AvgExpression <- sd(as.numeric(df_filtered[gene_idx, paste0("AvgExpression_", species_list)]), na.rm = TRUE) / 
+			mean(as.numeric(df_filtered[gene_idx, paste0("AvgExpression_", species_list)]), na.rm = TRUE)
+		
+		# MedianExpression
+		Q1_MedianExpression <- quantile(as.numeric(df_filtered[gene_idx, paste0("MedianExpression_", species_list)]), 0.25, na.rm = TRUE)
+		Q3_MedianExpression <- quantile(as.numeric(df_filtered[gene_idx, paste0("MedianExpression_", species_list)]), 0.75, na.rm = TRUE)
+		IQR_MedianExpression <- Q3_MedianExpression - Q1_MedianExpression
+		
+		results_matrix[gene_idx, ] <- c(Q1_CellRatio, Q3_CellRatio, IQR_CellRatio, CV_TotalExpression, CV_AvgExpression, Q1_MedianExpression, Q3_MedianExpression, IQR_MedianExpression)
+	}
+	
+	# 转换为data.frame
+	results_matrix <- as.data.frame(results_matrix)
+	results_matrix$Gene <- rownames(results_matrix)
+	
+	# 基于阈值筛选基因
+	index <- results_matrix$IQR_CellRatio < thresholds$IQR_CellRatio & 
+		results_matrix$CV_AvgExpression < thresholds$CV_AvgExpression & 
+		results_matrix$IQR_MedianExpression < thresholds$IQR_MedianExpression
+	
+	return(results_matrix[index, ])
+}
+
+# 应用筛选函数到final_res的每一个组分
+species_list <- c("mouse", "rat", "pig", "monkey", "human")
+thresholds <- list(
+	IQR_CellRatio = 0.2,
+	CV_AvgExpression = 0.45,
+	IQR_MedianExpression = 0.65
+)
+
+selected_genes_list <- lapply(final_res, FUN=filter_genes, species_list=species_list, thresholds=thresholds)
+
+# 读取GPCR表格
+gpcr_df <- read.xlsx("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/GPCR分布图/20231018_GPCRlist_for_pancreas_analysis.xlsx", colNames = T)
+
+# 合并final_res和gpcr_df中的信息到selected_genes_list
+# Step 1: Merge selected_genes_list with final_res
+
+# 因为selected_genes_list和final_res都有alpha, beta, delta, PP的子列表，我们需要分别合并这些子列表
+cell_types <- c("alpha", "beta", "delta", "PP")
+
+for (cl in cell_types){
+  # 使用Gene列作为合并的键
+  selected_genes_list[[cl]] <- merge(selected_genes_list[[cl]], final_res[[cl]], by = "Gene", all.x = TRUE)
+}
+
+# Step 2: Merge with gpcr_df
+species_cols <- "Gene.Symbol.(Mouse)"
+
+for (cl in cell_types) {
+  # 使用Gene列作为合并的键，并且使用Gene.Symbol.(Mouse)列
+  selected_genes_list[[cl]] <- merge(selected_genes_list[[cl]], gpcr_df, by.x = "Gene", by.y = species_cols, all.x = TRUE)
+  
+  # 只保留Name、Family、Class、Subclass列
+  cols_to_drop <- setdiff(names(gpcr_df), c("Name", "Family", "Class", "Subclass"))
+  selected_genes_list[[cl]] <- selected_genes_list[[cl]][, !(names(selected_genes_list[[cl]]) %in% cols_to_drop)]
+}
+
+
+# 定义要处理的动物种类
+species <- c("mouse", "rat", "pig", "monkey", "human")
+
+# 遍历每个细胞类型的数据框
+for (cell_type in names(selected_genes_list)) {
+  # 对于每个种类进行循环操作
+  for (sp in species) {
+    # 计算Q1和Q3
+    q1 <- quantile(selected_genes_list[[cell_type]][[paste0("AvgExpression_", sp)]], 0.25, na.rm = TRUE)
+    q3 <- quantile(selected_genes_list[[cell_type]][[paste0("AvgExpression_", sp)]], 0.75, na.rm = TRUE)
+    
+    # 基于Q1、Q3和0为每个种类的AvgExpression定义表达水平
+    selected_genes_list[[cell_type]][[paste0("ExpressionLevel_", sp)]] <- with(selected_genes_list[[cell_type]], 
+        ifelse(is.na(get(paste0("AvgExpression_", sp))), "Absent", 
+               ifelse(get(paste0("AvgExpression_", sp)) < q1, "Low", 
+               ifelse(get(paste0("AvgExpression_", sp)) > q3, "High", "Medium"))))
+  }
+}
+
+# 打印alpha数据框的前6行以查看结果
+head(selected_genes_list$alpha)
+
+saveRDS(selected_genes_list, "20231027_islets_selected_genes_list.rds")
+write.xlsx(selected_genes_list, "20231027_islets_selected_genes_list.xlsx")
+
+
+
+library(pheatmap)
+library(dplyr)
+library(RColorBrewer)
+
+# 创建热图的函数
+create_heatmap <- function(data_frame) {
+  
+  gene_list <- data_frame$Gene
+  species_names <- c("mouse", "rat", "pig", "monkey", "human")
+
+  binary_matrix <- matrix(0, nrow=length(gene_list), ncol=length(species_names))
+  rownames(binary_matrix) <- gene_list
+  colnames(binary_matrix) <- species_names
+
+  expression_levels <- c("Absent" = 0, "Low" = 1, "Medium" = 2, "High" = 3)
+
+  for (species in species_names) {
+    col_name <- paste("ExpressionLevel", species, sep="_")
+    binary_matrix[,species] <- as.numeric(factor(data_frame[,col_name], levels = names(expression_levels)))
+  }
+
+  gene_annotation <- data_frame[, c("Gene", "Family")]
+  rownames(gene_annotation) <- gene_annotation$Gene
+  gene_annotation$Family <- factor(gene_annotation$Family)
+  gene_annotation$Gene <- NULL
+
+  class_levels <- levels(gene_annotation$Family)
+
+  set3_colors <- brewer.pal(n = length(class_levels), name = "Set3")
+  annotation_colors <- list(Family = setNames(set3_colors, class_levels))
+
+  heatmap_colors <- colorRampPalette(c("white", "blue"))(4)
+
+  heatmap_result <- pheatmap(binary_matrix, 
+                             annotation_row = gene_annotation, 
+                             cluster_rows = TRUE, 
+                             cluster_cols = FALSE, 
+                             show_colnames = TRUE, 
+                             show_rownames = TRUE, 
+                             annotation_colors = annotation_colors,
+                             col = heatmap_colors,
+                             clustering_method = "ward.D2",
+                             silent = TRUE,
+                             fontsize_row = 8) # 调整行名字（基因名字）的字体大小
+  
+  return(heatmap_result)
+}
+
+# 为每个数据框创建热图并存储在列表中
+heatmaps_list <- list(
+  alpha = create_heatmap(selected_genes_list[["alpha"]]),
+  beta = create_heatmap(selected_genes_list[["beta"]]),
+  delta = create_heatmap(selected_genes_list[["delta"]]),
+  PP = create_heatmap(selected_genes_list[["PP"]])
+)
+
+pdf("20231027_islets_alpha_expressed_gpcr.pdf", width = 10, height = 15)
+heatmaps_list$alpha
+dev.off()
+
+pdf("20231027_islets_beta_expressed_gpcr.pdf", width = 10, height = 40)
+heatmaps_list$beta
+dev.off()
+
+pdf("20231027_islets_delta_expressed_gpcr.pdf", width = 10, height = 15)
+heatmaps_list$delta
+dev.off()
+
+pdf("20231027_islets_gamma_expressed_gpcr.pdf", width = 10, height = 10)
+heatmaps_list$PP
+dev.off()
+
+saveRDS(heatmaps_list, "20231027_islets_gpcr_heatmaps_list.rds")
+```
+
+## 6. 20231027 glp1r beta cell 中和beta中筛选到的gpcr的相关性
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231027_GPCR_GPCR_correlation_analysis")
+
+selected_genes_list <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis/20231027_islets_selected_genes_list.rds")
+regulator_geneset <- selected_genes_list$beta$Gene
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering/20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+names(species_objects) <- species_names
+
+species_objects_glp1r <- list()
+
+for (i in names(species_objects)){
+	species_objects[[i]] <- subset(species_objects[[i]], idents = "beta")
+	species_objects_glp1r[[i]] <- subset(species_objects[[i]], Glp1r > 0)
+}
+names(species_objects_glp1r) <- species_names
+rm(seurat_object)
+
+## 1. 仅在beta细胞中去看下glp1r与其他gpcr之间的关系
+genie3_output <- matrix(0, nrow=1, ncol=3)
+colnames(genie3_output) <- c("Glp1r", "species", "targetGenename")
+genie3_output <- as.data.frame(genie3_output)
+
+# 1. GENIE3分析
+# 提取基因表达矩阵
+for (i in names(species_objects_glp1r)){
+	print(i)
+	expr_matrix <- as.matrix(species_objects_glp1r[[i]]@assays$RNA@data[regulator_geneset, ])
+	# 使用GENIE3计算重要性
+	temp <- GENIE3(expr_matrix, targets="Glp1r", regulators = setdiff(regulator_geneset, "Glp1r"))
+	temp <- as.data.frame(temp)
+	temp$species <- i
+	temp$targetGenename <- setdiff(regulator_geneset, "Glp1r")
+	genie3_output <- rbind(genie3_output, temp)
+}
+genie3_output <- genie3_output[-1, ]
+
+table(genie3_output$species)
+# 2. scLink
+GenerateGCNByscLink <- function(object, targets_geneset, seed_use = 1234, nCores = 6, lda_value = seq(3, 0.01, -0.05)) {
+	
+	celltypes <- unique(as.character(object@active.ident))
+	celltype_tfModules <- list()
+	
+	message("celltype used:", celltypes)
+	for (i in 1:length(celltypes)) {
+		
+		message(i)
+		celltype_i <- celltypes[i]
+		message("Cell type ", celltype_i)
+		celltype_object <- subset(object, ident = celltype_i)
+		
+		combined_gene <- intersect(targets_geneset, rownames(celltype_object))
+		count.norm <- as.matrix(celltype_object@assays$RNA@data[combined_gene, ])
+		count.norm <- t(count.norm)
+		
+		## filer cells and genes
+		row_sum <- apply(count.norm > 0, 1, sum)
+		col_sum <- apply(count.norm > 0, 2, sum)
+		count.norm <- count.norm[row_sum > 0.01 * ncol(count.norm), col_sum > 0.01 * nrow(count.norm)]
+		
+		## network
+		set.seed(seed_use)
+		networks = scLink::sclink_net(expr = count.norm, ncores = nCores, lda = lda_value)
+		message("Finishing gene networks!")
+		bic_value <- c()
+		for (j in 1:length(lda_value)){ bic_value <- c(bic_value, networks$summary[[j]]$bic)}
+		
+		mat <- networks$summary[[which.min(bic_value)]]$adj
+		mat[!upper.tri(mat, diag = TRUE)] <- 0
+		net_adj <- reshape::melt(mat)
+		net_adj <- net_adj[net_adj$value==1, ]
+		net_adj <- net_adj[as.character(net_adj$X1)!=as.character(net_adj$X2), ]
+		res_net <- list(net_adj = net_adj, corr = networks$cor, count.norm = count.norm)
+		
+		if(nrow(net_adj) > 0){
+			
+			colnames(res_net$net_adj) <- c("regulatoryGene", "targetGene", "link")
+			
+			spearman <- psych::corr.test(res_net$count.norm, method = "spearman", ci = F)
+			pearson <- psych::corr.test(res_net$count.norm, method = "pearson", ci = F)
+			
+			for(k in 1:nrow(res_net$net_adj)){
+				res_net$net_adj$spearman_corr[k] <- spearman$r[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$pearson_corr[k] <- pearson$r[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$scLink_corr[k] <- res_net$corr[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$spearman_pvalue[k] <- spearman$p[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$pearson_pvalue[k] <- pearson$p[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+			}
+			
+			res_net$net_adj$celltype <- celltype_i
+			celltype_tfModules[[celltype_i]] <- res_net$net_adj
+			message("Finished!")
+		} else {next}
+		
+	}
+	
+	# Combine the list of data frames into a single data frame
+	final_df <- do.call(rbind, celltype_tfModules)
+	return(final_df)
+}
+## gcn 
+glp1r_res_sclink <- list()
+for (i in names(species_objects_glp1r)){
+	print(i)
+	glp1r_res_sclink[[i]] <- GenerateGCNByscLink(object = species_objects_glp1r[[i]], 
+																							 targets_geneset = regulator_geneset, lda_value = 0.001)
+}
+
+names(glp1r_res_sclink) <- names(species_objects_glp1r)
+
+glp1r_res_sclink_glp1r <- c()
+for (i in names(glp1r_res_sclink)){
+  index2 <- glp1r_res_sclink[[i]]$regulatoryGene=="Glp1r" | glp1r_res_sclink[[i]]$targetGene=="Glp1r"
+  temp2 <- glp1r_res_sclink[[i]][index2, ]
+  temp2$species <- i
+  glp1r_res_sclink_glp1r <- rbind(glp1r_res_sclink_glp1r, temp2)
+}
+
+temp1 <- glp1r_res_sclink_glp1r[glp1r_res_sclink_glp1r$regulatoryGene=="Glp1r", ]
+temp2 <- glp1r_res_sclink_glp1r[glp1r_res_sclink_glp1r$targetGene=="Glp1r", ]
+temp2 <- temp2[c(2, 1, 3, 4, 5, 6, 7, 8, 9, 10)]
+colnames(temp2) <- c("regulatoryGene", "targetGene", "link",  "spearman_corr",
+										 "pearson_corr", "scLink_corr", "spearman_pvalue", "pearson_pvalue", "celltype", "species")
+glp1r_res_sclink_glp1r <- rbind(temp1, temp2)
+
+
+write.xlsx(genie3_output, "20231030_islets_beta_glp1r_gpcr_genie3.xlsx", rowNames = F)
+write.xlsx(glp1r_res_sclink_glp1r, "20231030_islets_beta_glp1r_gpcr_sclink.xlsx")
+saveRDS(gcn_list, "20231027_beta_gpcr_gpcr_res.rds")
+
+```
+
+
+## 7. 20231104 换种思路筛选物种保守的GPCR
+```{r}
+
+## 思路简介
+# 你利用四分位数来定量化表达水平，并将每个GPCR在不同物种中的表达归类为Absent, Low, Medium, High。
+# 这种做法可以很好地区分出每个GPCR在不同物种中beta细胞的相对表达水平
+# 为了对GPCR在不同物种中的表达水平进行综合打分，你可以采取以下几个步骤：
+
+# 确定评分系统：首先需要确定每个表达水平（High, Medium, Low, Absent）对应的分数。例如，你可以这样设置分数：
+# High = 3
+# Medium = 2
+# Low = 1
+# Absent = 0
+# 应用评分：然后根据每个基因在每个物种中的表达水平应用上面确定的分数。
+# 计算总分：对每个基因，将所有物种中的分数相加，得到一个总分。这个分分数代表了该基因在考虑的所有物种中的表达水平。
+# 标准化：为了公平比较，可以将每个基因的总分数除以可能的最大分数（这里是每个物种的分数加起来的最大可能值，
+#如果所有物种都是High，则为每个物种的High分数之和）。
+# 排序和比较：根据得到的标准化总分，可以排序基因，看哪个GPCR在所有物种中总体表达量最高。
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis")
+
+# 首先，确保你已经加载了必要的库
+library(dplyr)
+
+# 读取数据
+final_res <- list()
+for (i in getSheetNames("20231026_islets_gpcr_expression_result.xlsx")){
+	final_res[[i]] <- read.xlsx("20231026_islets_gpcr_expression_result.xlsx", sheet = i)
+}
+
+# 读取GPCR表格
+gpcr_df <- read.xlsx("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/GPCR分布图/20231018_GPCRlist_for_pancreas_analysis.xlsx", colNames = T)
+
+# 合并final_res和gpcr_df中的信息
+# Step Merge with gpcr_df
+species_cols <- "Gene.Symbol.(Mouse)"
+
+for (cl in names(final_res)) {
+  # 使用Gene列作为合并的键，并且使用Gene.Symbol.(Mouse)列
+  final_res[[cl]] <- merge(final_res[[cl]], gpcr_df, by.x = "Gene", by.y = species_cols, all.x = TRUE)
+  
+  # 只保留Name、Family、Class、Subclass列
+  cols_to_drop <- setdiff(names(gpcr_df), c("Name", "Family", "Class", "Subclass"))
+  final_res[[cl]] <- final_res[[cl]][, !(names(final_res[[cl]]) %in% cols_to_drop)]
+}
+
+# 定义要处理的动物种类
+species <- c("mouse", "rat", "pig", "monkey", "human")
+# 遍历每个细胞类型的数据框
+for (cell_type in names(final_res)) {
+  # 对于每个种类进行循环操作
+  for (sp in species) {
+    # 计算Q1和Q3
+    q1 <- quantile(final_res[[cell_type]][[paste0("AvgExpression_", sp)]], 0.25, na.rm = TRUE)
+    q3 <- quantile(final_res[[cell_type]][[paste0("AvgExpression_", sp)]], 0.75, na.rm = TRUE)
+    
+    # 基于Q1、Q3和0为每个种类的AvgExpression定义表达水平
+    final_res[[cell_type]][[paste0("ExpressionLevel_", sp)]] <- with(final_res[[cell_type]], 
+        ifelse(is.na(get(paste0("AvgExpression_", sp))), "Absent", 
+               ifelse(get(paste0("AvgExpression_", sp)) < q1, "Low", 
+               ifelse(get(paste0("AvgExpression_", sp)) > q3, "High", "Medium"))))
+  }
+}
+
+# 打印alpha数据框的前6行以查看结果
+head(final_res$alpha)
+
+# 计算打分系统
+# 首先定义一个将表达水平转换为分数的函数
+expression_to_score <- function(expression_level) {
+    if (is.na(expression_level)) {
+        return(0) # return 0 if the input is NA
+    }
+    
+    score <- switch(expression_level,
+                    'Absent' = 0,
+                    'Low' = 1,
+                    'Medium' = 2,
+                    'High' = 3,
+                    0) # default case if no match is found
+    return(score)
+}
+
+# 应用这个函数到每个物种的每个表达水平列
+# Define your species and data frame names
+species <- c("mouse", "rat", "pig", "monkey", "human")
+data_frame_names <- c("alpha", "beta", "delta", "PP")
+
+# Loop over each data frame in final_res
+for (df_name in data_frame_names) {
+  # Loop over each species within the data frame
+  for (specie in species) {
+    expression_level_col <- paste("ExpressionLevel", specie, sep="_")
+    score_col <- paste("Score", specie, sep="_")
+    
+    # Apply the function to the specified column and assign the result to a new score column
+    final_res[[df_name]][[score_col]] <- sapply(final_res[[df_name]][[expression_level_col]], expression_to_score)
+  }
+}
+
+# Function to calculate total score for one data frame, with optional weighting
+
+calculate_total_score <- function(df, species_names, weights=NULL) {
+  # If weights are not provided, create a vector of 1s (no weighting)
+  if(is.null(weights)) {
+    weights <- rep(1, length(species_names))
+  }
+  
+  # Calculate weighted scores for each species
+  weighted_scores <- lapply(seq_along(species_names), function(i) {
+    species_score_column <- paste("Score", species_names[i], sep = "_")
+    if (!is.null(df[[species_score_column]])) {
+      return(df[[species_score_column]] * weights[i])
+    } else {
+      return(rep(0, nrow(df)))
+    }
+  })
+  
+  # Combine weighted scores into a data frame
+  weighted_scores_df <- do.call(cbind, weighted_scores)
+  
+  # Ensure that the number of rows in the weighted scores matches the original data frame
+  if(nrow(weighted_scores_df) != nrow(df)) {
+    stop("Mismatch between the number of rows in the data frame and the weighted scores.")
+  }
+  
+  # Calculate the sum of the weighted scores to create the Total_Score column
+  df$Total_Score <- rowSums(weighted_scores_df, na.rm = TRUE)
+  
+  return(df)
+}
+
+# Optional: Define weights for each species
+# Example: weights <- c(1, 1, 1, 1, 2)  # Assuming you want to give double weight to human data
+
+# Apply the function to each data frame in final_res, with or without the specified weights
+# Example with weights:
+# final_res <- lapply(final_res, calculate_total_score, species_names, weights)
+
+# 然后你调用lapply时应该这样指定species_names：
+weights <- c(2, 1, 1, 1, 2)
+final_res <- lapply(final_res, calculate_total_score, species_names=species, weights = weights)
+
+# 20231107的时候补充了这个数据
+# 标准化总分：为了使分数比较公平，你需要将每个基因的总分除以可能的最大分数。
+# 这个步骤很关键，因为它可以调整不同基因的分数，以便可以公平比较它们的相对表达。
+
+# 计算最大可能得分
+max_possible_score <- sum(weights * 3)
+
+# 对每个数据框进行标准化处理
+final_res_normalized <- lapply(final_res, function(df) {
+  # 添加Normalized_Score列
+  df$Normalized_Score <- df$Total_Score / max_possible_score
+  return(df)
+})
+
+saveRDS(final_res_normalized, "20231104_islets_gpcr_total_score.rds")
+write.xlsx(final_res_normalized, "20231104_islets_gpcr_total_score.xlsx")
+
+# 定义筛选函数
+library(dplyr)
+
+filter_genes <- function(df, species_list, thresholds) {
+  # 使用TotalCells在至少两个物种中筛选基因
+  df_filtered <- df %>%
+    rowwise() %>%
+    filter(
+      sum(c_across(paste0("TotalCells_", species_list)) > thresholds$cells) >= thresholds$species &&
+      Normalized_Score >= thresholds$score
+    ) %>%
+    ungroup()  # 移除rowwise分组，避免后续操作中的潜在问题
+
+  return(df_filtered)
+}
+
+# 应用筛选函数
+thresholds <- list(cells = 3, species = 2, score = 0.45)
+final_res_filtered <- lapply(final_res_normalized, filter_genes, species_list=species, thresholds=thresholds)
+saveRDS(final_res_filtered, "20231107_islets_gpcr_total_score_filter_by_total_cell_3_species_2_total_normalized_score_0.45.rds")
+write.xlsx(final_res_filtered, "20231107_islets_gpcr_total_score_by_total_cell_3_species_2_total_normalized_score_0.45.xlsx")
+
+```
+
+
+## 8. 20231105 & 20231107 可视化7模块中的GPCR
+```{r}
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis")
+
+total_res <- readRDS("20231104_islets_gpcr_total_score.rds")
+final_res <- readRDS("20231107_islets_gpcr_total_score_filter_by_total_cell_3_species_2_total_normalized_score_0.45.rds")
+
+for (i in names(total_res)){
+	total_res_temp <- total_res[[i]][, c("Gene", "Class", "Normalized_Score")]
+	final_res_temp <- final_res[[i]][, c("Gene", "Class", "Normalized_Score")]
+
+  experiment_gpcr <- c("Adra2a", "Adrb2", "Ffar1", "Ffar2", "Fzd1", "Ghsr", "Gpr135", "Gpr19", "Mchr1", 
+										 "P2ry1", "Ptger3", "S1pr2", "Sstr1", "Sstr2", "Sstr3")
+
+
+ total_res_temp$Class[total_res_temp$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+ total_res_temp$Class[!total_res_temp$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+
+#plot_data$Normalized_Score <- (plot_data$Total_Score - min(plot_data$Total_Score)) /
+# (max(plot_data$Total_Score) - min(plot_data$Total_Score))
+## 仅仅标记toal_res中top30的基因
+final_res_temp$Class[final_res_temp$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+final_res_temp$Class[!final_res_temp$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+
+# 从final_res中提取每个类别的top 30基因
+top_genes <- final_res_temp %>%
+  group_by(Class) %>%
+  top_n(30, Normalized_Score) %>%
+  ungroup() %>%
+  dplyr::select(Gene) # 只选择Gene列
+
+# 为total_res数据框添加一个新列，以标识是否为top 30基因
+total_res_temp <- total_res_temp %>%
+  mutate(IsTop30 = ifelse(Gene %in% top_genes$Gene, "Top 30", "Other"))
+
+total_res_temp$expriment_gpcr <- "NA"
+total_res_temp$expriment_gpcr[total_res_temp$Gene %in% experiment_gpcr] <- total_res_temp$Gene[total_res_temp$Gene %in% experiment_gpcr]
+
+
+total_res_temp$Label <- ifelse(total_res_temp$Gene %in% top_genes$Gene, as.character(total_res_temp$Gene), NA)
+total_res_temp$Class <- factor(total_res_temp$Class, levels = c("Peptide receptors", "Protein receptors", 
+																											"Nucleotide receptors", "Lipid receptors",
+																											"Aminergic and Amino acid receptors", "Orphan receptors",
+																											"Adhesion receptors", "Other class receptors"))
+# 使用ggplot2
+library(ggrepel)
+# Create the plot
+
+# 设定随机数种子确保结果可重现
+set.seed(123)
+
+# 计算每个类别的唯一数值作为X轴的基准位置
+total_res_temp$Class_Num <- as.numeric(as.factor(total_res_temp$Class))
+
+# 在数据框中添加手动抖动后的X坐标
+total_res_temp$Jittered_X <- jitter(total_res_temp$Class_Num, amount = 0.05)  # 进一步减小抖动的范围
+
+# 绘图
+p <- ggplot(total_res_temp, aes(x = Jittered_X, y = Normalized_Score, color = Class)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_text_repel(
+    aes(label = Label),
+    force = 2,                # 调整排斥力
+    box.padding   = unit(0.35, "lines"),    
+    point.padding = unit(0.2, "lines"),    
+    segment.color = 'grey50',
+    size          = 3,
+    max.overlaps  = Inf
+  ) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_blank(),  # 隐藏X轴抖动后的数值
+    axis.ticks.x = element_blank(),  # 隐藏X轴刻度线
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  labs(
+    title = paste0(i, ' GPCR Class vs Total Score'),
+    x = 'Class',
+    y = 'Total Score'
+  ) +
+  scale_x_continuous(breaks = total_res$Class_Num, labels = total_res$Class) +  # 设置X轴的刻度和标签
+  facet_wrap(~Class, scales = 'free_x', ncol = 3)
+
+# 生成PDF
+pdf_name <- paste0("20231107_",i, "selected_conserved_gpcr.pdf")
+ggsave(pdf_name, plot = p, width = 12, height = 15)
+}
+
+```
+
+## 9. 20231106 基于重新筛选的gpcr列表跑出GLP1R-GPCR 互作表格
+
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231027_GPCR_GPCR_correlation_analysis")
+
+selected_genes_list <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis/20231107_islets_gpcr_total_score_filter_by_total_cell_3_species_2_total_normalized_score_0.45.rds")
+temp <- selected_genes_list$beta
+temp$Class[temp$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+temp$Class[!temp$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+regulator_geneset <- temp$Gene[temp$Class %in% c("Peptide receptors", "Protein receptors", 
+																											"Nucleotide receptors", "Lipid receptors",
+																											"Aminergic and Amino acid receptors", "Orphan receptors")]
+ 
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering/20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+names(species_objects) <- species_names
+
+species_objects_glp1r <- list()
+
+for (i in names(species_objects)){
+	species_objects[[i]] <- subset(species_objects[[i]], idents = "beta")
+	species_objects_glp1r[[i]] <- subset(species_objects[[i]], Glp1r > 0)
+}
+names(species_objects_glp1r) <- species_names
+rm(seurat_object)
+
+## 1. 仅在beta细胞中去看下glp1r与其他gpcr之间的关系
+genie3_output <- matrix(0, nrow=1, ncol=3)
+colnames(genie3_output) <- c("Glp1r", "species", "targetGenename")
+genie3_output <- as.data.frame(genie3_output)
+
+# 1. GENIE3分析
+# 提取基因表达矩阵
+for (i in names(species_objects_glp1r)){
+	print(i)
+	expr_matrix <- as.matrix(species_objects_glp1r[[i]]@assays$RNA@data[regulator_geneset, ])
+	# 使用GENIE3计算重要性
+	temp <- GENIE3(expr_matrix, targets="Glp1r", regulators = setdiff(regulator_geneset, "Glp1r"))
+	temp <- as.data.frame(temp)
+	temp$species <- i
+	temp$targetGenename <- setdiff(regulator_geneset, "Glp1r")
+	genie3_output <- rbind(genie3_output, temp)
+}
+genie3_output <- genie3_output[-1, ]
+
+table(genie3_output$species)
+
+# 2. scLink
+
+GenerateGCNByscLink <- function(object, targets_geneset, seed_use = 1234, nCores = 6, lda_value = seq(3, 0.01, -0.05)) {
+	
+	celltypes <- unique(as.character(object@active.ident))
+	celltype_tfModules <- list()
+	
+	message("celltype used:", celltypes)
+	for (i in 1:length(celltypes)) {
+		
+		message(i)
+		celltype_i <- celltypes[i]
+		message("Cell type ", celltype_i)
+		celltype_object <- subset(object, ident = celltype_i)
+		
+		combined_gene <- intersect(targets_geneset, rownames(celltype_object))
+		count.norm <- as.matrix(celltype_object@assays$RNA@data[combined_gene, ])
+		count.norm <- t(count.norm)
+		
+		## filer cells and genes
+		row_sum <- apply(count.norm > 0, 1, sum)
+		col_sum <- apply(count.norm > 0, 2, sum)
+		count.norm <- count.norm[row_sum > 0.01 * ncol(count.norm), col_sum > 0.01 * nrow(count.norm)]
+		
+		## network
+		set.seed(seed_use)
+		networks = scLink::sclink_net(expr = count.norm, ncores = nCores, lda = lda_value)
+		message("Finishing gene networks!")
+		bic_value <- c()
+		for (j in 1:length(lda_value)){ bic_value <- c(bic_value, networks$summary[[j]]$bic)}
+		
+		mat <- networks$summary[[which.min(bic_value)]]$adj
+		mat[!upper.tri(mat, diag = TRUE)] <- 0
+		net_adj <- reshape::melt(mat)
+		net_adj <- net_adj[net_adj$value==1, ]
+		net_adj <- net_adj[as.character(net_adj$X1)!=as.character(net_adj$X2), ]
+		res_net <- list(net_adj = net_adj, corr = networks$cor, count.norm = count.norm)
+		
+		if(nrow(net_adj) > 0){
+			
+			colnames(res_net$net_adj) <- c("regulatoryGene", "targetGene", "link")
+			
+			spearman <- psych::corr.test(res_net$count.norm, method = "spearman", ci = F)
+			pearson <- psych::corr.test(res_net$count.norm, method = "pearson", ci = F)
+			
+			for(k in 1:nrow(res_net$net_adj)){
+				res_net$net_adj$spearman_corr[k] <- spearman$r[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$pearson_corr[k] <- pearson$r[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$scLink_corr[k] <- res_net$corr[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$spearman_pvalue[k] <- spearman$p[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+				res_net$net_adj$pearson_pvalue[k] <- pearson$p[res_net$net_adj$targetGene[k], res_net$net_adj$regulatoryGene[k]]
+			}
+			
+			res_net$net_adj$celltype <- celltype_i
+			celltype_tfModules[[celltype_i]] <- res_net$net_adj
+			message("Finished!")
+		} else {next}
+		
+	}
+	
+	# Combine the list of data frames into a single data frame
+	final_df <- do.call(rbind, celltype_tfModules)
+	return(final_df)
+}
+
+## gcn 
+glp1r_res_sclink <- list()
+for (i in names(species_objects_glp1r)){
+	print(i)
+	glp1r_res_sclink[[i]] <- GenerateGCNByscLink(object = species_objects_glp1r[[i]], 
+																							 targets_geneset = regulator_geneset, lda_value = 0.001)
+}
+
+names(glp1r_res_sclink) <- names(species_objects_glp1r)
+
+glp1r_res_sclink_glp1r <- c()
+for (i in names(glp1r_res_sclink)){
+  index2 <- glp1r_res_sclink[[i]]$regulatoryGene=="Glp1r" | glp1r_res_sclink[[i]]$targetGene=="Glp1r"
+  temp2 <- glp1r_res_sclink[[i]][index2, ]
+  temp2$species <- i
+  glp1r_res_sclink_glp1r <- rbind(glp1r_res_sclink_glp1r, temp2)
+}
+
+temp1 <- glp1r_res_sclink_glp1r[glp1r_res_sclink_glp1r$regulatoryGene=="Glp1r", ]
+temp2 <- glp1r_res_sclink_glp1r[glp1r_res_sclink_glp1r$targetGene=="Glp1r", ]
+temp2 <- temp2[c(2, 1, 3, 4, 5, 6, 7, 8, 9, 10)]
+colnames(temp2) <- c("regulatoryGene", "targetGene", "link",  "spearman_corr",
+										 "pearson_corr", "scLink_corr", "spearman_pvalue", "pearson_pvalue", "celltype", "species")
+glp1r_res_sclink_glp1r <- rbind(temp1, temp2)
+
+
+write.xlsx(genie3_output, "20231107_islets_beta_glp1r_gpcr_genie3.xlsx", rowNames = F)
+write.xlsx(glp1r_res_sclink_glp1r, "20231107_islets_beta_glp1r_gpcr_sclink.xlsx")
+
+gcn_list <- list(genie3_output = genie3_output, glp1r_res_sclink_glp1r = glp1r_res_sclink_glp1r)
+saveRDS(gcn_list, "20231107_beta_gpcr_gpcr_res.rds")
+
+```
+
+## 9. 20231107 总结glp1r-gpcr互作的一个大表格并进行可视化
+```{r}
+## 我希望的一个大表格就是
+## Gene1, Gene2, mouse_spearman_corr, mouse_pearson_corr, mouse_scLink_corr, mouse_genie3_weight, 后面就是其他物种的
+
+rm(list = ls())
+library(dplyr)
+library(tidyr)
+
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231027_GPCR_GPCR_correlation_analysis")
+gcn_list <- readRDS("20231107_beta_gpcr_gpcr_res.rds")
+
+
+gcn_list$genie3_output$regulatoryGene <- "Glp1r"
+gcn_list$genie3_output$targetGene <- gcn_list$genie3_output$targetGenename
+gcn_list$genie3_output$genie3_weight <- gcn_list$genie3_output$Glp1r
+gcn_list$genie3_output$Glp1r <- NULL
+gcn_list$genie3_output$targetGenename <- NULL
+gcn_list$genie3_output$pair <- paste(gcn_list$genie3_output$regulatoryGene, gcn_list$genie3_output$targetGene, sep = "_")
+
+# 假设你的数据框架是df，它已经包含了所有物种的数据
+# 下面的代码将根据pair和species创建宽格式数据框
+# 先为每个物种的targetGene和genie3_weight创建唯一的列名
+df <- gcn_list$genie3_output %>%
+  mutate(
+    species_genie3_weight = paste(species, "genie3_weight", sep = "_")
+  )
+
+# 然后使用pivot_wider展开数据框
+wide_df <- df %>%
+  pivot_wider(
+    id_cols = c(pair),
+    names_from = species, 
+    values_from = c(genie3_weight),
+    names_glue = "{species}_{.value}"
+  )
+
+
+gcn_list_wide  <- list(genie3_output = wide_df)
+rm(wide_df)
+## 长格式变成宽格式
+gcn_list$glp1r_res_sclink_glp1r$pair <- paste(gcn_list$glp1r_res_sclink_glp1r$regulatoryGene, 
+																							gcn_list$glp1r_res_sclink_glp1r$targetGene, sep = "_")
+
+df <- gcn_list$glp1r_res_sclink_glp1r %>%
+  mutate(
+    species_genie3_weight = paste(species, "spearman_corr", sep = "_"),
+    species_targetGene = paste(species, "pearson_corr", sep = "_"),
+    species_genie3_weight = paste(species, "scLink_corr", sep = "_"),
+    species_targetGene = paste(species, "spearman_pvalue", sep = "_"),
+    species_genie3_weight = paste(species, "pearson_pvalue", sep = "_"),
+  )
+
+# 然后使用pivot_wider展开数据框
+wide_df <- df %>%
+  pivot_wider(
+    id_cols = c(pair),
+    names_from = species, 
+    values_from = c( spearman_corr, pearson_corr, scLink_corr, spearman_pvalue, pearson_pvalue),
+    names_glue = "{species}_{.value}"
+  )
+
+gcn_list_wide$glp1r_res_sclink_glp1r <- wide_df
+rm(wide_df)
+
+# Merging the data frames on the 'pair' column
+merged_df <- full_join(gcn_list_wide$genie3_output, gcn_list_wide$glp1r_res_sclink_glp1r, by = "pair")
+
+# View the head of the merged data frame
+head(merged_df)
+
+merged_df$gpcr <- 
+selected_genes_list <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis/20231107_islets_gpcr_total_score_filter_by_total_cell_3_species_2_total_normalized_score_0.45.rds")
+temp <- selected_genes_list$beta
+temp$Class[temp$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+temp$Class[!temp$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+
+
+# 假设 merged_df 是已经合并了 genie3_output 和 sclink 数据的数据框
+# 提取 pair 中的第二个基因名
+merged_df <- merged_df %>%
+  mutate(gpcr = sapply(strsplit(as.character(pair), "_"), `[`, 2))
+
+final_df <- left_join(merged_df, temp, by = c("gpcr" = "Gene"))
+
+saveRDS(final_df, "final_df.rds")
+
+
+
+experiment_gpcr <- c("Adra2a", "Adrb2", "Ffar1", "Ffar2", "Fzd1", "Ghsr", "Gpr135", "Gpr19", "Mchr1", 
+										 "P2ry1", "Ptger3", "S1pr2", "Sstr1", "Sstr2", "Sstr3")
+
+
+## 20231108 
+# 标准化函数
+normalize <- function(x) {
+  return((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
+}
+
+# 对每个物种的非p值指标进行标准化
+final_df_nr <- final_df %>%
+  mutate(across(ends_with("genie3_weight"), normalize)) %>%
+  mutate(across(ends_with("spearman_corr"), normalize)) %>%
+  mutate(across(ends_with("pearson_corr"), normalize)) %>%
+  mutate(across(ends_with("scLink_corr"), normalize))
+
+# 计算每个物种的综合得分
+species <- c("mouse", "rat", "pig", "monkey", "human")
+for (specie in species) {
+  final_df_nr <- final_df_nr %>%
+    mutate(!!sym(paste0(specie, "_score")) := rowMeans(dplyr::select(., 
+      contains(paste0(specie, "_genie3_weight")), 
+      contains(paste0(specie, "_spearman_corr")), 
+      contains(paste0(specie, "_pearson_corr")), 
+      contains(paste0(specie, "_scLink_corr"))
+    ), na.rm = TRUE))
+}
+
+library(dplyr)
+
+# 为每个物种设置权重，对于人和小鼠给予更高的权重
+weights <- c(mouse = 2, rat = 1, pig = 1, monkey = 1, human = 2)
+
+# 计算加权总和得分
+final_df_nr <- final_df_nr %>%
+  rowwise() %>%
+  mutate(glp1r_gpcr_weighted_sum = sum(c(mouse_score * weights['mouse'], 
+                                         rat_score * weights['rat'], 
+                                         pig_score * weights['pig'], 
+                                         monkey_score * weights['monkey'], 
+                                         human_score * weights['human']), na.rm = TRUE)) %>%
+  ungroup()
+
+# 查看包含加权总和得分的数据框
+print(final_df_nr)
+
+saveRDS(final_df_nr, "20231108_islets_glp1r_gpcr_rowMeans_genie3_weight_spearman_corr_pearson_corr_scLink_corr.rds")
+write.xlsx(final_df_nr, "20231108_islets_glp1r_gpcr_rowMeans_genie3_weight_spearman_corr_pearson_corr_scLink_corr.xlsx")
+
+```
+
+## 10. 20231108 画glp1r-gpcr的互作的图
+```{r}
+
+rm(list = ls())
+
+library(igraph)
+library(ggraph)
+library(dplyr)
+library(tidyr)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231027_GPCR_GPCR_correlation_analysis")
+
+final_df_nr <- readRDS("20231108_islets_glp1r_gpcr_rowMeans_genie3_weight_spearman_corr_pearson_corr_scLink_corr.rds")
+
+colnames(final_df_nr)
+
+plot_data <- final_df_nr[ , c("pair", "glp1r_gpcr_weighted_sum", "Class")]
+
+# 假设您的数据框名为plot_data
+plot_data <- plot_data %>%
+  separate(pair, into = c("gene1", "gene2"), sep = "_", remove = FALSE)
+
+# 获取独特的GPCR类别
+gpcr_classes <- unique(plot_data$Class)
+
+# 打开PDF设备，并设置每页的图形布局为两行三列
+pdf("GLP1R_interaction_networks_by_class.pdf", width = 11, height = 8.5)
+par(mfrow = c(2, 3), mar = c(2, 2, 2, 2)) # 设置边距
+
+# 为每个类别绘制星形布局网络图
+for (gpcr_class in gpcr_classes) {
+  # 过滤出当前类别并且权重大于0的数据
+  class_edges <- plot_data %>%
+    filter(Class == gpcr_class, glp1r_gpcr_weighted_sum > 0) %>%
+    dplyr::select(source = gene1, target = gene2, weight = glp1r_gpcr_weighted_sum)
+  
+  # 如果没有数据则跳过
+  if (nrow(class_edges) == 0) next
+  
+  # 创建无向igraph对象
+  g <- graph_from_data_frame(class_edges, directed = FALSE)
+  
+  # 找到GLP1R的索引
+  glp1r_index <- which(V(g)$name == "Glp1r")
+  
+  # 创建星形布局，GLP1R在中心
+  layout <- layout_as_star(g, center = glp1r_index)
+  
+  # 绘制网络图
+  plot(g, layout = layout,
+       vertex.color = ifelse(V(g)$name == "Glp1r", "lightpink", "lightgrey"), 
+       vertex.size = 20, # 增加点的大小以适应标签
+       vertex.label.color = "black", # 设置标签颜色为黑色
+       vertex.label.dist = 0, # 设置标签距离节点的距离
+       vertex.label.cex = 0.8, # 设置标签的字体大小
+       edge.width = E(g)$weight * 2, # 调整边的宽度
+       main = paste("Interaction Network for", gpcr_class))
+  
+  # 如果六个类别已经绘制完毕，跳出循环
+  if (which(gpcr_class == gpcr_classes) == 6) break
+}
+
+# 关闭PDF设备
+dev.off()
+
+```
+
+## 11. 20231109 每个细胞类型中的GPCR表达分布
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/GPCR分布图/")
+
+gpcr_df <- read.xlsx("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/GPCR分布图/20231018_GPCRlist_for_pancreas_analysis.xlsx", colNames = T)
+
+gpcr_df$Class[gpcr_df$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+gpcr_df$Class[!gpcr_df$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+
+
+seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis/20231011_CombineSpeciesMatrix_Clustering/20231011_final_combine_five_species.rds")
+table(seurat_object$group)
+
+species_names <- c("mouse", "rat", "pig", "monkey", "human")
+species_objects <- lapply(species_names, function(species) {
+	print(species_names)
+  subset_obj <- subset(seurat_object, group == species)
+  DefaultAssay(subset_obj) <- "RNA"
+  # Normalize the data
+  subset_obj <- NormalizeData(subset_obj)
+  return(subset_obj)
+})
+names(species_objects) <- species_names
+
+gpcrs_list <- list()
+gpcr_famliy_count <- list()
+
+expression_threshold <- 0
+min_cells <- 10
+
+for(celltype in c("alpha", "beta", "delta", "PP")){
+	print(celltype)
+	for(species in names(species_objects)) {
+	print(species)
+	obj <- subset(species_objects[[species]], idents = celltype)
+	# 1. 提取出GPCR的表达谱并筛选基因
+	intersectname <- intersect(gpcr_df[["Gene.Symbol.(Mouse)"]], rownames(obj))
+	
+	expressed_gpcrs <- names(which(rowMeans(obj@assays$RNA@counts[intersectname, ]) > expression_threshold))
+	
+  # 2. 基于表达的细胞数目筛选基因
+	col_name <- paste(celltype, species, sep = "_")
+  expressed_gpcrs <- names(rowSums(obj@assays$RNA@counts[expressed_gpcrs, ] > expression_threshold) > min_cells)
+ 
+  gpcr_subset <- gpcr_df[gpcr_df[["Gene.Symbol.(Mouse)"]] %in% expressed_gpcrs, ]
+  gpcrs_list[[col_name]] <- gpcr_subset
+  gpcr_famliy_count[[col_name]] <- table(gpcr_subset$Class)/sum(table(gpcr_subset$Class))
+ 
+}
+}
+
+
+# Create a function to process each list element
+process_element <- function(data, name) {
+  tibble(
+    GPCR_Family = names(data),
+    Value = data,
+    Category = name
+  ) %>%
+  separate(Category, into = c("Cell_Type", "Species"), sep = "_")
+}
+
+# Apply the function to each element of the list and bind rows
+gpcr_df <- bind_rows(map2_df(gpcr_famliy_count, names(gpcr_famliy_count), process_element), .id = "RowID")
+
+gpcr_df$GPCR_Family <- factor(gpcr_df$GPCR_Family, levels = c("Peptide receptors", "Protein receptors", 
+																											"Nucleotide receptors", "Lipid receptors",
+																											"Aminergic and Amino acid receptors", "Orphan receptors",
+																											"Adhesion receptors", "Other class receptors"))
+combined_colors <- c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02", "#A6761D", "#666666")
+
+combined_colors <- brewer.pal(8,"Pastel2")
+# 使用ggplot2绘制分面柱状图
+pdf("20231109_islets_celltype_species_gpcrfamily_count_distribution_mincell_10_expression_0.pdf", width = 8, height = 5)
+ggplot(gpcr_df, aes(x = Species, y = Value, fill = GPCR_Family)) +
+  geom_bar(stat = "identity", position="stack") +
+  facet_wrap(~Cell_Type, ncol = 4) + # 四个独立的图面，每列一个
+  theme_bw() +
+	scale_fill_manual(values=combined_colors) +
+  labs(x = "GPCR Family", y = "Percentage", fill = "Species") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+dev.off()
+
+write.xlsx(gpcr_df, "20231109__islets_celltype_species_gpcrfamily_count.xlsx")
+```
+
+## 12. 20231109 8模块中的结果重新可视化，仅仅只关注筛选到的GPCR
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis")
+
+final_res <- readRDS("20231107_islets_gpcr_total_score_filter_by_total_cell_3_species_2_total_normalized_score_0.45.rds")
+
+plot_data <- c()
+for (celltype in names(final_res)){
+	temp <- final_res[[celltype]][, c("Gene", "Class", "Normalized_Score")]
+	temp$celltype <- celltype
+	plot_data <- rbind(plot_data, temp)
+}
+
+plot_data$Class[plot_data$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+plot_data$Class[!plot_data$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+
+library(tidyverse)
+
+wide_data <- plot_data %>%
+  pivot_wider(names_from = celltype, values_from = Normalized_Score)
+
+wide_data <- as.data.frame(wide_data)
+wide_data$Class <- factor(wide_data$Class, levels  =  c("Peptide receptors", "Protein receptors", 
+																											"Nucleotide receptors", "Lipid receptors",
+																											"Aminergic and Amino acid receptors", "Orphan receptors",
+																											"Adhesion receptors", "Other class receptors"))
+wide_data <- wide_data[which(!(wide_data$Gene %in% c("Tm2d1", "Tmem181a", "Slc52a2"))), ]
+head(wide_data)
+wide_data <- arrange(wide_data, Class, Gene)
+
+write.xlsx(wide_data, "20231114_islets_conserved_gpcr_expression.xlsx")
+
+wide_data_try <- arrange(wide_data, Class, Gene, desc(alpha), desc(beta))
+
+dd <- wide_data_try[83:111, ]
+# 从基因名中提取数字
+dd$GPCR_Num <- as.numeric(gsub("[^0-9]", "", dd$Gene))
+sorted_dd <- dd[order(dd$GPCR_Num), ]
+sorted_dd <- rbind(sorted_dd[1:6, ], sorted_dd[29, ], sorted_dd[7:28, ])
+
+wide_data_try_new <- rbind(wide_data_try[1:82, ], sorted_dd[, 1:6], wide_data_try[112:159, ])
+
+wide_data <- wide_data_try_new
+
+wide_data_plot <- as.data.frame(wide_data[, c("alpha", "beta",  "delta", "PP")])
+rownames(wide_data_plot) <- wide_data$Gene
+wide_data_plot[is.na(wide_data_plot)] <- 0 
+
+anno_row <- data.frame(Class = wide_data$Class)
+rownames(anno_row) <- wide_data$Gene
+
+# combined_colors <- c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02", "#A6761D", "#666666")
+# combined_colors <- brewer.pal(8,"Pastel2")
+combined_colors <- c("#8BBCA3", "#EDEDA1", "#A8BEDD", "#C0A0CC", "#8F914E", "#B7AC7D", "#E0B890", "#A8A5A5")
+names(combined_colors) <- levels(wide_data$Class)
+
+custom_colors <-  colorRampPalette(c("#D6ECF2", "white", "#F2AAB9"))(50)
+
+index <- which(wide_data$Class %in% c("Peptide receptors", "Protein receptors"))
+heatmap_plot1 <- pheatmap(
+  wide_data_plot[index, ],  
+   color = custom_colors,
+  annotation_row = data.frame(Class = anno_row[index, 1], row.names = rownames(anno_row)[index]),
+  main = "Peptide & Protein Receptors Heatmap",
+  annotation_colors = list(Class = combined_colors[c("Peptide receptors", "Protein receptors")]),
+  fontsize = 8,
+  fontsize_col = 8,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  #scale="row"
+)
+
+index <- which(wide_data$Class %in% c("Nucleotide receptors", "Lipid receptors",
+																			"Aminergic and Amino acid receptors", "Orphan receptors"))
+heatmap_plot2 <- pheatmap(
+  wide_data_plot[index, ],  
+   color = custom_colors,
+  annotation_row = data.frame(Class = anno_row[index, 1], row.names = rownames(anno_row)[index]),
+  main = "Nucleotide & Lipid & Aminergic and Amino acid & Orphan Receptors Heatmap",
+  annotation_colors = list(Class = combined_colors[c("Nucleotide receptors", "Lipid receptors",
+																										"Aminergic and Amino acid receptors", "Orphan receptors")]),
+  fontsize = 8,
+  fontsize_col = 8,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  #scale="row"
+)
+
+# 创建自定义颜色渐变并调整透明度
+
+index <- which(wide_data$Class %in% c("Adhesion receptors", "Other class receptors"))
+heatmap_plot3 <- pheatmap(
+  wide_data_plot[index, ],  
+  color = custom_colors,
+  annotation_row = data.frame(Class = anno_row[index, 1], row.names = rownames(anno_row)[index]),
+  main = "Adhesion & Other class Receptors Heatmap",
+  annotation_colors = list(Class = combined_colors[c("Adhesion receptors", "Other class receptors")]),
+  fontsize = 8,
+  fontsize_col = 8,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  #scale = "row"
+)
+
+pdf("20231108_islets_peptide_protein_receptors_normalized_score.pdf", width = 6, height = 9)
+heatmap_plot1
+dev.off()
+
+pdf("20231108_islets_Nucleotide_Lipid_receptors_normalized_score.pdf", width = 6, height = 12)
+heatmap_plot2
+dev.off()
+
+pdf("20231108_islets_Adhesion_Other_class_receptors_normalized_score.pdf", width = 6, height = 12)
+heatmap_plot3
+dev.off()
+```
+
+## 13. 补充图1, 五个物种的质量控制的图, 补充图2小鼠和人的数据分开数据集画聚类图以及比例图
+```{r}
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231115_SupFigure")
+
+mouse <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+DefaultAssay(mouse) <- "RNA"
+mouse$gse <- mouse$age
+mouse$gse <- gsub("12wk", "GSE203376", mouse$gse)
+mouse$gse <- gsub("8wk", "GSE128565", mouse$gse)
+mouse$gse <- gsub("unknown", "GSE84133", mouse$gse)
+
+rat <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+monkey <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+human <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+p1 <- VlnPlot(subset(mouse, gse == "GSE203376"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p2 <- VlnPlot(subset(mouse, gse == "GSE128565"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p3 <- VlnPlot(subset(mouse, gse == "GSE84133"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+
+p4 <- VlnPlot(rat, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p5 <- VlnPlot(pig, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p6 <- VlnPlot(monkey, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+
+p7 <- VlnPlot(subset(human, group == "E-MTAB-5061"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p8 <- VlnPlot(subset(human, group == "GSE114297"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p9 <- VlnPlot(subset(human, group == "GSE81547"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+p10 <- VlnPlot(subset(human, group == "GSE84133"), features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), ncol = 4, pt.size = 0)
+
+
+plots_1 <- plot_grid(p1,p2,p3,p4,p5, ncol = 1)
+plots_2 <- plot_grid(p6,p7,p8,p9,p10, ncol = 1)
+
+plots <- plot_grid(plots_1, plots_2, ncol = 2)
+pdf("20231115_islet_FigureS1_qc.pdf", width = 25, height = 18)
+plots
+dev.off()
+
+
+## human 四个样本的聚类分开 以及比例计算
+library(scScape)
+human$orig.ident <- human$group
+prename <- "human"
+plots_hn <- scScape::GenerateClusterPlot(object = human, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+plots_hn_1 <- plot_grid(plots_hn$p_split_tsne, plots_hn$percentageplot, ncol = 2, rel_widths = c(3, 1), rel_heights = c(1.5, 3))
+
+## mouse 三个样本的聚类分开 以及比例计算
+mouse$orig.ident <- mouse$gse
+prename <- "mouse"
+plots_mm <- scScape::GenerateClusterPlot(object = mouse, file.prefix = prename, pt.size = 0.5) # 23871 cells
+
+plots_mm_1 <- plot_grid(plots_mm$p_split_tsne, plots_mm$percentageplot, ncol = 2, rel_widths = c(3, 1), rel_heights = c(1.5, 3))
+
+
+plots_clustering <- plot_grid(plots_hn_1, plots_mm_1, ncol = 1)
+
+pdf("20231115_islets_FigureS2_clustering_percentage.pdf", width = 26, height = 13)
+plots_clustering
+dev.off()
+
+cellnumber <- rbind(plots_hn$percentageplot$data, plots_mm$percentageplot$data)
+
+write.xlsx(cellnumber, "20231115_islets_FigureS2_cellnumber.xlsx")
+
+```
+
+## 14. 图1 中 F中每个基因补全 以及补充图2中这些基因在小鼠和人的不同数据集中的情况
+```{r}
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20230804_Figure1_analysis")
+
+mm_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230529_pan_mouse_analysis/20230601_final_combine_mouse_4133_8565_3376.rds")
+rat_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230521_pan_rat_analysis/Rds/20230523_finalused_GSE203412_rat_endo.rds")
+pig_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230523_pan_pig_analysis/20230524_final_GSE198623_pig_seurat_object_sc.rds")
+mk_sc_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230527_pan_monkey_analysis/20230527_final_GSE120180_monkey_iselts_sc.rds")
+hn_seurat_object <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20230601_pan_human_analysis/20230628_final_combine_human_4133_5061_1547_4297.rds")
+
+levels(mm_seurat_object)
+levels(rat_seurat_object)
+levels(pig_seurat_object)
+levels(mk_sc_seurat_object)
+levels(hn_seurat_object)
+
+genes <- read.xlsx("islet_hormones_and_known_endocrine_transcription_factors.xlsx")
+genes$pig[11] <- "MNX1"
+## 因为猪中没有MAFB基因，为了补这个空白，把这个基因替换为MNX1，MNX1在猪中也是不表达 然后AI中把这个基因名字换为MAFB
+plot_dot <- function(seurat_object, plot_features){
+	DefaultAssay(seurat_object) <- "RNA"
+	p_dotplot <- DotPlot(seurat_object, features = plot_features, col.min = 0, col.max = 1, scale = T, dot.min = 0.01)
+	p_dotplot <- p_dotplot + coord_flip()
+	p_dotplot <- p_dotplot + scale_colour_gradient2(low = "#FDE4D9", mid = "#ED6C4A", high = "#4A0E13",
+                                                midpoint = 0.5, breaks = c( 0, 0.5, 1), label = c(0, 0.5, 1))
+	p_dotplot <- p_dotplot + theme(axis.text.x = element_text(size = 10, vjust = 0.5, hjust = 0.5, angle = 45))
+	p_dotplot <- p_dotplot + theme(axis.line = element_blank())  # 移除原始的坐标轴线条
+	p_dotplot <- p_dotplot + theme(panel.border = element_rect(color = "black", fill = NA, size = 1))  # 添加方形边框
+	p_dotplot <- p_dotplot + xlab(NULL) + ylab(NULL) # 不显示坐标轴轴名称
+	return(p_dotplot)
+}
+
+p_mm <- plot_dot(seurat_object = mm_seurat_object, plot_features = na.omit(genes$mouse)) + NoLegend()
+p_rat <- plot_dot(seurat_object = rat_seurat_object, plot_features = na.omit(genes$rat)) + NoLegend()
+p_pig <- plot_dot(seurat_object = pig_seurat_object, plot_features = na.omit(genes$pig)) + NoLegend()
+p_mk <- plot_dot(seurat_object = mk_sc_seurat_object, plot_features = na.omit(genes$monkey)) + NoLegend()
+p_hn <- plot_dot(seurat_object = hn_seurat_object, plot_features = na.omit(genes$human))
+
+plots <- plot_grid(p_mm, p_rat, p_pig, p_mk, p_hn, ncol = 5, rel_widths = c(1, 1, 1, 1, 1.7), align = "hv")
+
+pdf("20231115_islets_figure1f_exp_hormones_and_known_endocrine_transcription_factors.pdf", width = 16, height = 8)
+plots
+dev.off()
+
+##补充图2的F G图
+
+## mouse
+p_mm1 <- plot_dot(seurat_object = subset(mm_seurat_object, gse == "GSE128565"),
+								 plot_features = na.omit(genes$mouse)) + NoLegend()
+
+p_mm2 <- plot_dot(seurat_object = subset(mm_seurat_object, gse == "GSE203376"),
+								 plot_features = na.omit(genes$mouse)) + NoLegend()
+
+p_mm3 <- plot_dot(seurat_object = subset(mm_seurat_object, gse == "GSE84133"),
+								 plot_features = na.omit(genes$mouse)) 
+
+
+plots_mm <- plot_grid(p_mm1, p_mm2, p_mm3, ncol = 3, rel_widths = c(1, 1,  1.7), align = "hv")
+
+pdf("20231115_islets_figure_s2e_mouse_exp_hormones_and_known_endocrine_transcription_factors.pdf", width = 10, height = 8)
+plots_mm
+dev.off()
+
+## human
+p_hn1 <- plot_dot(seurat_object = subset(hn_seurat_object, group == "E-MTAB-5061"), 
+																				plot_features = na.omit(genes$human)) + NoLegend()
+
+p_hn2 <- plot_dot(seurat_object = subset(hn_seurat_object, group == "GSE114297"), 
+																				plot_features = na.omit(genes$human)) + NoLegend()
+								 
+p_hn3 <- plot_dot(seurat_object = subset(hn_seurat_object, group == "GSE81547"), 
+																				plot_features = na.omit(genes$human)) + NoLegend()
+								 
+p_hn4 <- plot_dot(seurat_object = subset(hn_seurat_object, group == "GSE84133"), 
+																				plot_features = na.omit(genes$human))
+
+plots_hn <- plot_grid(p_hn1, p_hn2, p_hn3,p_hn4, ncol = 4, rel_widths = c(1, 1, 1, 1.7), align = "hv")
+
+pdf("20231115_islets_figure_s2f_human_exp_hormones_and_known_endocrine_transcription_factors.pdf", width = 13, height = 8)
+plots_hn
+dev.off()
+```
+
+## 15. 补充图3 各个物种中GPCR表达的图
+```{r}
+
+rm(list = ls())
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231115_SupFigure")
+
+final_res <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231026_GPCRexpression_analysis/20231107_islets_gpcr_total_score_filter_by_total_cell_3_species_2_total_normalized_score_0.45.rds")
+
+plot_data <- c()
+for (celltype in names(final_res)){
+	temp <- final_res[[celltype]][, c("Gene", "Class", "Score_mouse", "Score_rat", "Score_pig", "Score_human","Normalized_Score")]
+	temp$celltype <- celltype
+	plot_data <- rbind(plot_data, temp)
+}
+
+plot_data$Class[plot_data$Class %in% c("Aminergic receptors", "Amino acid receptors")] <- "Aminergic and Amino acid receptors"
+plot_data$Class[!plot_data$Class %in% c("Adhesion receptors" , "Nucleotide receptors",
+																				"Orphan receptors", "Peptide receptors", "Lipid receptors",
+																				"Protein receptors", "Aminergic and Amino acid receptors")] <- "Other class receptors"
+
+library(tidyverse)
+
+wide_data <- plot_data %>%
+  pivot_wider(names_from = celltype, values_from = c("Score_mouse", "Score_rat", "Score_pig", "Score_human","Normalized_Score"))
+
+wide_data
+
+wide_data <- as.data.frame(wide_data)
+wide_data$Class <- factor(wide_data$Class, levels  =  c("Peptide receptors", "Protein receptors", 
+																											"Nucleotide receptors", "Lipid receptors",
+																											"Aminergic and Amino acid receptors", "Orphan receptors",
+																											"Adhesion receptors", "Other class receptors"))
+wide_data <- wide_data[which(!(wide_data$Gene %in% c("Tm2d1", "Tmem181a", "Slc52a2"))), ]
+head(wide_data)
+
+wide_data <- arrange(wide_data, Class, Gene)
+
+wide_data[is.na(wide_data)] <- 0
+
+dd <- wide_data[83:111, ]
+# 从基因名中提取数字
+dd$GPCR_Num <- as.numeric(gsub("[^0-9]", "", dd$Gene))
+sorted_dd <- dd[order(dd$GPCR_Num), ]
+sorted_dd <- rbind(sorted_dd[1:6, ], sorted_dd[29, ], sorted_dd[7:28, ])
+
+wide_data <- rbind(wide_data[1:82, ], sorted_dd[, 1:22], wide_data[112:159, ])
+
+plot_data <- wide_data[ , 3:18]/3
+rownames(plot_data) <- wide_data$Gene
+
+anno_row <- data.frame(Class = wide_data$Class)
+rownames(anno_row) <- wide_data$Gene
+
+# combined_colors <- c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02", "#A6761D", "#666666")
+combined_colors <- c("#8BBCA3", "#EDEDA1", "#A8BEDD", "#C0A0CC", "#8F914E", "#B7AC7D", "#E0B890", "#A8A5A5")
+names(combined_colors) <- levels(wide_data$Class)
+
+custom_colors <-  colorRampPalette(c("#D6ECF2", "white", "#F2AAB9"))(50)
+
+heatmap_plot1 <- pheatmap(
+  plot_data,  
+  color = custom_colors,
+  annotation_row = anno_row,
+  main = "Peptide & Protein Receptors Heatmap",
+  annotation_colors = list(Class = combined_colors),
+  fontsize = 8,
+  fontsize_col = 8,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  #scale="row"
+)
+
+pdf("20231116_islets_figure_s3_gpcr_expression_5_species.pdf", width = 10, height = 32)
+heatmap_plot1
+dev.off()
+
+```
+
+## 16. 补充图4 各个物种Glp1r-GPCR互作的图
+```{r}
+rm(list = ls())
+
+library(igraph)
+library(ggraph)
+library(dplyr)
+library(tidyr)
+setwd("/home/zhengjh/projects/Pancreas/Analysis/20231115_SupFigure")
+
+final_df_nr <- readRDS("/home/zhengjh/projects/Pancreas/Analysis/20231020_Figure2_analysis_gpcr_expression/20231027_GPCR_GPCR_correlation_analysis/20231108_islets_glp1r_gpcr_rowMeans_genie3_weight_spearman_corr_pearson_corr_scLink_corr.rds")
+
+colnames(final_df_nr)
+
+species_score <- c("mouse_score", "rat_score", "pig_score", "monkey_score", "human_score")
+
+for (species in species_score){
+	
+	plot_data <- final_df_nr[ , c("pair", species, "Class")]
+
+# 假设您的数据框名为plot_data
+ plot_data <- plot_data %>%
+  separate(pair, into = c("gene1", "gene2"), sep = "_", remove = FALSE)
+
+# 获取独特的GPCR类别
+gpcr_classes <- unique(plot_data$Class)
+
+# 打开PDF设备，并设置每页的图形布局为两行三列
+pdf(paste(species, "GLP1R_interaction_networks_by_class.pdf", sep = "_"), width = 11, height = 8.5)
+par(mfrow = c(2, 3), mar = c(2, 2, 2, 2)) # 设置边距
+
+# 为每个类别绘制星形布局网络图
+for (gpcr_class in gpcr_classes) {
+  # 过滤出当前类别并且权重大于0的数据
+  class_edges <- plot_data %>%
+    filter(Class == gpcr_class, species > 0) %>%
+    dplyr::select(source = gene1, target = gene2, weight = species)
+  
+  # 如果没有数据则跳过
+  if (nrow(class_edges) == 0) next
+  
+  # 创建无向igraph对象
+  g <- graph_from_data_frame(class_edges, directed = FALSE)
+  
+  # 找到GLP1R的索引
+  glp1r_index <- which(V(g)$name == "Glp1r")
+  
+  # 创建星形布局，GLP1R在中心
+  layout <- layout_as_star(g, center = glp1r_index)
+  
+  # 绘制网络图
+  plot(g, layout = layout,
+       vertex.color = ifelse(V(g)$name == "Glp1r", "lightpink", "lightgrey"), 
+       vertex.size = 20, # 增加点的大小以适应标签
+       vertex.label.color = "black", # 设置标签颜色为黑色
+       vertex.label.dist = 0, # 设置标签距离节点的距离
+       vertex.label.cex = 0.8, # 设置标签的字体大小
+       edge.width = E(g)$weight * 2, # 调整边的宽度
+       main = paste("Interaction Network for", gpcr_class))
+  
+  # 如果六个类别已经绘制完毕，跳出循环
+  if (which(gpcr_class == gpcr_classes) == 6) break
+}
+
+# 关闭PDF设备
+dev.off()
+}
+```
+
+
+
